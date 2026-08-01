@@ -17,9 +17,10 @@ import glob
 from datetime import datetime
 
 try:
-    from database import load_persisted_uploaded_records
+    from database import load_persisted_uploaded_records, load_canonical_customers
 except ImportError:
     load_persisted_uploaded_records = None
+    load_canonical_customers = None
 
 # Các thư viện cào dữ liệu online là TUỲ CHỌN - nếu máy chưa cài (hoặc cài lỗi),
 # ứng dụng vẫn phải chạy được với dữ liệu khách hàng thật / file upload, không crash.
@@ -369,18 +370,34 @@ def build_ai_learning_report(records: list, file_name: str = "uploaded_file") ->
                 ordered_columns.append(column)
 
     columns = ordered_columns
-    mapping = []
-    for column in columns:
-        ai_column, confidence = _infer_canonical_column(column)
-        mapping.append({
-            "source_column": column,
-            "ai_column": ai_column,
-            "confidence": round(confidence, 2),
-            "editable": confidence < 0.99,
-            "confidence_display": f"{int(confidence * 100)}%",
-        })
 
-    valid_columns = sum(1 for item in mapping if item["confidence"] >= 0.7 and item["ai_column"] != "unknown_column")
+    # Mapping schema giờ do Ollama đảm nhiệm (xem schema_mapper.py), dựa trên
+    # tên cột + giá trị mẫu thực tế, thay vì chỉ so khớp alias cứng như trước.
+    # KHÔNG fallback ngầm nếu Ollama lỗi -- báo lỗi rõ ràng để người dùng biết
+    # và tự map tay qua bảng chỉnh sửa trên UI (theo yêu cầu đã xác nhận).
+    from schema_mapper import map_columns_with_ai, missing_required_fields, SchemaMappingError
+
+    mapping_error = None
+    ai_mapping = []
+    try:
+        ai_mapping = map_columns_with_ai(columns, raw_fields_list)
+    except SchemaMappingError as e:
+        mapping_error = str(e)
+
+    mapping = [
+        {
+            "source_column": m["source_column"],
+            "ai_column": m["canonical_field"],
+            "confidence": m["confidence"],
+            "editable": True,
+            "confidence_display": m["confidence_display"],
+            "reasoning": m.get("reasoning", ""),
+        }
+        for m in ai_mapping
+    ]
+
+    missing_required = missing_required_fields(ai_mapping) if ai_mapping else []
+    valid_columns = sum(1 for item in mapping if item["confidence"] >= 0.7 and item["ai_column"] != "unmapped")
     missing_columns = max(0, len(mapping) - valid_columns)
 
     total_orders = len(records)
@@ -420,6 +437,11 @@ def build_ai_learning_report(records: list, file_name: str = "uploaded_file") ->
         f"Số trường thiếu: {missing_columns}",
     ]
 
+    if mapping_error:
+        insights.append(f"⚠ Lỗi mapping AI: {mapping_error}")
+    if missing_required:
+        insights.append(f"⚠ Thiếu trường bắt buộc chưa được map: {', '.join(missing_required)}")
+
     return {
         "file_name": file_name,
         "business_type": business_type,
@@ -431,6 +453,8 @@ def build_ai_learning_report(records: list, file_name: str = "uploaded_file") ->
         "valid_columns": valid_columns,
         "missing_columns": missing_columns,
         "mapping": mapping,
+        "mapping_error": mapping_error,
+        "missing_required_fields": missing_required,
         "insights": insights,
     }
 
@@ -597,6 +621,44 @@ def load_real_customer_data(folder_path="DATA") -> list:
     return all_records
 
 
+def canonical_records_to_pipeline_format(canonical_rows: list) -> list:
+    """
+    CẦU NỐI: chuyển dữ liệu đã CHUẨN HÓA (từ bảng canonical_customers, xem
+    schema_mapper.py + database.save_canonical_customers) sang định dạng mà
+    clustering.py (TF-IDF trên cột 'text') và persona_simulator.py
+    (real_age/real_job/real_pain/real_trait) đang tiêu thụ.
+
+    Đây là nơi DUY NHẤT nối dữ liệu đã chuẩn hóa vào pipeline AI — thay thế
+    hoàn toàn cho việc process_customer_rows() tự đoán cột bằng alias cứng
+    (bộ alias đó vẫn còn để đọc các file KHÔNG đi qua bước chuẩn hóa AI,
+    xem load_customer_file_from_path/load_uploaded_dataframe bên dưới).
+    """
+    records = []
+    for row in canonical_rows or []:
+        interest = str(row.get("interest_keywords") or "").strip()
+        job = str(row.get("job") or "Khách hàng").strip() or "Khách hàng"
+        pain = str(row.get("pain_point") or "Sợ mua phải sản phẩm không tốt").strip()
+        trait = str(row.get("personality") or "Thận trọng").strip()
+
+        desc_text = f"{interest} {job} {pain} {trait}".strip()
+        try:
+            age_val = int(row.get("age")) if row.get("age") not in (None, "") else random.randint(22, 45)
+        except (ValueError, TypeError):
+            age_val = random.randint(22, 45)
+
+        records.append({
+            "text": clean_text(desc_text),
+            "source": "canonical",
+            "weight": 3.0,
+            "real_age": age_val,
+            "real_job": job,
+            "real_pain": pain or "Sợ mua phải sản phẩm không tốt",
+            "real_trait": trait or "Thận trọng",
+            "raw_fields": row,
+        })
+    return records
+
+
 def collect_all(uploaded_records: list = None, enable_online_scrape: bool = True, local_customer_file: str = None) -> pd.DataFrame:
     """
     Chạy toàn bộ Bước 1: GỘP CHUNG dữ liệu trực tuyến (Trends + News),
@@ -630,18 +692,31 @@ def collect_all(uploaded_records: list = None, enable_online_scrape: bool = True
     else:
         print("    ⏭ Đã tắt cào dữ liệu online theo yêu cầu.")
 
-    # 2. Dữ liệu khách hàng thật từ thư mục DATA/ hoặc từ file khách hàng cục bộ trên máy
-    if uploaded_records:
-        print(f"    ✔ Dùng {len(uploaded_records)} khách hàng do người dùng tải lên qua web.")
+    # 2. NGUỒN CHUẨN ƯU TIÊN: dữ liệu đã được AI map + người dùng xác nhận,
+    #    lưu trong bảng canonical_customers (xem schema_mapper.py). Đây là
+    #    dữ liệu "sạch" nhất vì đã qua bước ánh xạ schema + bù dữ liệu thiếu.
+    canonical_used = False
+    if load_canonical_customers is not None:
+        canonical_rows = load_canonical_customers()
+        if canonical_rows:
+            print(f"    ✔ Dùng {len(canonical_rows)} khách hàng ĐÃ CHUẨN HÓA từ canonical_customers.")
+            records.extend(canonical_records_to_pipeline_format(canonical_rows))
+            canonical_used = True
+
+    # 2b. Dữ liệu khách hàng thô CHƯA qua bước chuẩn hóa (vd người dùng chưa
+    #     xác nhận mapping ở AI Learning Center) -- vẫn nạp để không chặn app,
+    #     nhưng dữ liệu này chưa được ánh xạ vào canonical schema.
+    if uploaded_records and not canonical_used:
+        print(f"    ✔ Dùng {len(uploaded_records)} khách hàng do người dùng tải lên qua web (CHƯA chuẩn hóa schema).")
         records.extend(uploaded_records)
 
-    if load_persisted_uploaded_records is not None:
+    if load_persisted_uploaded_records is not None and not canonical_used:
         remembered = load_persisted_uploaded_records(max_records=300)
         if remembered:
-            print(f"    ✔ Thêm {len(remembered)} khách hàng ghi nhớ từ lần upload trước.")
+            print(f"    ✔ Thêm {len(remembered)} khách hàng ghi nhớ từ lần upload trước (CHƯA chuẩn hóa schema).")
             records.extend(remembered)
 
-    if not uploaded_records:
+    if not uploaded_records and not canonical_used:
         if local_customer_file:
             print(f"    ✔ Đang đọc file khách hàng cục bộ: {local_customer_file}")
             try:
