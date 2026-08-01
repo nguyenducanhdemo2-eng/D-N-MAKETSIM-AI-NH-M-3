@@ -7,16 +7,10 @@ import json
 # Import hàm gọi AI nội bộ từ file của bạn để tái sử dụng kết nối Ollama
 from persona_simulator import _call_ollama
 
-MASTER_SCHEMA = {
-    "customer_id": {"type": "string"},
-    "age": {"type": "numeric"},
-    "gender": {"type": "category"},
-    "location": {"type": "string"},
-    "total_spending": {"type": "numeric"},
-    "job": {"type": "string"},
-    "pain_point": {"type": "string"},
-    "personality": {"type": "string"}
-}
+# Schema chuẩn giờ có 1 nguồn DUY NHẤT: schema_mapper.py. Trước đây file này
+# tự định nghĩa MASTER_SCHEMA riêng (thiếu interest_keywords/last_purchase_date
+# so với bảng canonical_customers), gây lệch dữ liệu giữa các module.
+from schema_mapper import CANONICAL_SCHEMA as MASTER_SCHEMA
 
 class AdvancedETLPipeline:
     def __init__(self, raw_records, mapping_config):
@@ -30,7 +24,7 @@ class AdvancedETLPipeline:
         for item in self.mapping_config:
             source_col = item.get("Tên cột gốc", item.get("source_column"))
             ai_col = item.get("AI hiểu là", item.get("ai_column"))
-            if ai_col and ai_col != "unknown_column" and source_col in self.raw_df.columns:
+            if ai_col and ai_col not in ("unknown_column", "unmapped") and source_col in self.raw_df.columns:
                 rename_dict[source_col] = ai_col
         
         self.mapped_df = self.raw_df.rename(columns=rename_dict)
@@ -75,9 +69,10 @@ class AdvancedETLPipeline:
         - Nghề nghiệp / Ghi chú: {row_data.get('job', 'Không rõ')}
         - Hành vi / Sở thích: {row_data.get('interest_keywords', 'Không rõ')}
         
-        Nhiệm vụ: Hãy suy luận logic độ tuổi (age), nghề nghiệp chuẩn hóa (job), nỗi đau mua sắm (pain_point) và tính cách (personality).
+        Nhiệm vụ: Hãy suy luận logic độ tuổi (age), nghề nghiệp chuẩn hóa (job), nỗi đau mua sắm (pain_point),
+        tính cách (personality) và từ khóa sở thích (interest_keywords, 3-5 từ khóa cách nhau bởi dấu phẩy).
         Chỉ trả về JSON duy nhất (không giải thích):
-        {{"age": 25, "job": "Sinh viên", "pain_point": "Sợ giá cao", "personality": "Thực tế, tiết kiệm"}}
+        {{"age": 25, "job": "Sinh viên", "pain_point": "Sợ giá cao", "personality": "Thực tế, tiết kiệm", "interest_keywords": "công nghệ, tiết kiệm, khuyến mãi"}}
         """
         response = await _call_ollama(prompt)
         try:
@@ -89,7 +84,13 @@ class AdvancedETLPipeline:
     async def ai_enhanced_imputation(self, limit_ai_calls=50):
         """Gọi Ollama nội suy các dòng thiếu Tuổi, Nghề nghiệp hoặc Nỗi đau"""
         # Lọc các dòng thiếu dữ liệu quan trọng
-        missing_mask = self.mapped_df['age'].isna() | self.mapped_df['job'].isna() | self.mapped_df['pain_point'].isna()
+        if 'interest_keywords' not in self.mapped_df.columns:
+            self.mapped_df['interest_keywords'] = np.nan
+
+        missing_mask = (
+            self.mapped_df['age'].isna() | self.mapped_df['job'].isna() |
+            self.mapped_df['pain_point'].isna() | self.mapped_df['interest_keywords'].isna()
+        )
         missing_indices = self.mapped_df[missing_mask].index[:limit_ai_calls] # Giới hạn batch để tránh nghẽn GPU
 
         if len(missing_indices) > 0:
@@ -107,12 +108,15 @@ class AdvancedETLPipeline:
                         self.mapped_df.loc[idx, 'pain_point'] = ai_data['pain_point']
                     if pd.isna(self.mapped_df.loc[idx, 'personality']) and 'personality' in ai_data:
                         self.mapped_df.loc[idx, 'personality'] = ai_data['personality']
+                    if pd.isna(self.mapped_df.loc[idx, 'interest_keywords']) and 'interest_keywords' in ai_data:
+                        self.mapped_df.loc[idx, 'interest_keywords'] = ai_data['interest_keywords']
 
         # Xử lý nốt những dòng còn rỗng (vượt quá limit_ai_calls) bằng giá trị mặc định
         self.mapped_df['age'].fillna(self.mapped_df['age'].median() or 25, inplace=True)
         self.mapped_df['job'].fillna("Khách hàng tự do", inplace=True)
         self.mapped_df['pain_point'].fillna("Quan tâm đến chất lượng và giá cả", inplace=True)
         self.mapped_df['personality'].fillna("Thận trọng", inplace=True)
+        self.mapped_df['interest_keywords'].fillna("mua sắm, khuyến mãi", inplace=True)
         
         return self
 
