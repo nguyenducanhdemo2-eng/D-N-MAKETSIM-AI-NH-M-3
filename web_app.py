@@ -563,6 +563,17 @@ def render_ai_learning_center(report: dict):
         st.write("**Số trường hợp lệ:**", report.get("valid_columns", 0))
         st.write("**Số trường thiếu:**", report.get("missing_columns", 0))
 
+        if report.get("mapping_error"):
+            st.error(
+                f"⚠ AI (Ollama) không thể tự động map schema: {report['mapping_error']}\n\n"
+                f"Bạn vẫn có thể chỉnh sửa mapping thủ công ở bảng bên dưới rồi bấm Xác nhận."
+            )
+        if report.get("missing_required_fields"):
+            st.warning(
+                f"Còn thiếu trường BẮT BUỘC chưa được map tới cột nào: "
+                f"{', '.join(report['missing_required_fields'])}. "
+                f"Hãy chọn cột phù hợp trong bảng bên dưới (hoặc để AI tự suy luận bù nếu doanh nghiệp thực sự không có dữ liệu này)."
+            )
         low_confidence_rows = [row for row in report.get("mapping", []) if row.get("confidence", 0) < 0.7]
         if low_confidence_rows:
             st.warning(f"Có {len(low_confidence_rows)} cột có độ tin cậy thấp (<70%). Hãy kiểm tra lại trước khi vào bước Synthetic Data.")
@@ -610,9 +621,18 @@ def render_ai_learning_center(report: dict):
                     # Kích hoạt luồng bất đồng bộ để gọi AI nội suy dữ liệu khuyết
                     clean_data = asyncio.run(run_advanced_etl(raw_data, mapping))
                     
-                    # Lưu lại tệp dữ liệu đã sạch 100% vào bộ nhớ phiên
+                    # Lưu lại tệp dữ liệu đã sạch 100% vào bộ nhớ phiên (để xem trước trên UI)
                     st.session_state["clean_customer_data"] = clean_data
-                    
+
+                    # QUAN TRỌNG: lưu vào bảng canonical_customers -- đây là bước trước đây
+                    # BỊ THIẾU, khiến dữ liệu đã chuẩn hóa không bao giờ được clustering/persona
+                    # đọc lại. Từ giờ collect_all() sẽ ưu tiên đọc từ đúng bảng này.
+                    save_canonical_customers_fn = getattr(database_module, "save_canonical_customers", None)
+                    if save_canonical_customers_fn is not None and clean_data:
+                        upload_id = st.session_state.get("current_upload_id")
+                        save_canonical_customers_fn(upload_id, clean_data)
+                        st.write(f"💾 Đã lưu {len(clean_data)} hồ sơ vào bảng dữ liệu chuẩn (canonical_customers).")
+
                     status.update(label=f"Hoàn tất! Chuẩn hóa thành công {len(clean_data)} hồ sơ khách hàng.", state="complete")
                     st.success("Hệ thống đã khóa dữ liệu chuẩn (Canonical Data Model). Sẵn sàng chuyển sang Mô phỏng Synthetic Data.")
                     
@@ -700,7 +720,9 @@ with st.sidebar:
                     st.session_state["ai_learning_report"] = learning_report
 
                     if save_uploaded_dataset is not None:
-                        save_uploaded_dataset(uploaded_file.name, new_records, column_names, upload_source="web_upload")
+                        st.session_state["current_upload_id"] = save_uploaded_dataset(
+                            uploaded_file.name, new_records, column_names, upload_source="web_upload"
+                        )
                     if save_learning_memory is not None:
                         learning_summary = save_learning_memory(uploaded_file.name, new_records, column_names, upload_source="web_upload")
                         st.session_state["ai_learning_summary"] = learning_summary
