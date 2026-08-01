@@ -13,7 +13,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Ensure UTF-8 output on Windows to avoid 'charmap' codec errors when
 # printing or logging Unicode characters. This sets PYTHONUTF8 and attempts
-# to reconfigure stdout/stderr to UTF-8 where supported.
+
 os.environ.setdefault("PYTHONUTF8", "1")
 try:
     sys.stdout.reconfigure(encoding="utf-8")
