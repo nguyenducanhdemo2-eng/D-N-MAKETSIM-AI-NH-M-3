@@ -72,8 +72,91 @@ def init_db():
             reasoning TEXT
         )
     """)
+    # ------------------------------------------------------------------------
+    # BẢNG DỮ LIỆU CHUẨN HÓA (CANONICAL) — nguồn dữ liệu DUY NHẤT mà clustering,
+    # persona, chat phải đọc từ đây, thay vì đọc thẳng file upload thô như
+    # trước (khiến mapping đã xác nhận bị "mất tích", không được dùng thật).
+    # ------------------------------------------------------------------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS canonical_customers (
+            id INTEGER PRIMARY KEY,
+            upload_id INTEGER,
+            customer_id TEXT,
+            age INTEGER,
+            gender TEXT,
+            job TEXT,
+            location TEXT,
+            total_spending REAL,
+            pain_point TEXT,
+            personality TEXT,
+            interest_keywords TEXT,
+            last_purchase_date TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
+
+
+def save_canonical_customers(upload_id: int, records: list):
+    """Lưu danh sách khách hàng ĐÃ CHUẨN HÓA (sau schema_mapper.apply_mapping()
+    + data_preprocessor bù dữ liệu thiếu) vào bảng canonical_customers.
+    Đây là bước bắt buộc: nếu bỏ qua bước này, dữ liệu chuẩn hóa sẽ không
+    được clustering/persona đọc thấy (lặp lại đúng lỗi 'clean_customer_data'
+    trước đây chỉ nằm trong session_state mà không ai đọc lại)."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    for r in records:
+        cursor.execute(
+            """INSERT INTO canonical_customers
+               (upload_id, customer_id, age, gender, job, location, total_spending,
+                pain_point, personality, interest_keywords, last_purchase_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                upload_id,
+                r.get("customer_id"),
+                r.get("age"),
+                r.get("gender"),
+                r.get("job"),
+                r.get("location"),
+                r.get("total_spending"),
+                r.get("pain_point"),
+                r.get("personality"),
+                r.get("interest_keywords"),
+                r.get("last_purchase_date"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def load_canonical_customers(upload_id: int = None, limit: int = 5000) -> list:
+    """Đọc dữ liệu khách hàng đã chuẩn hóa. upload_id=None -> lấy TẤT CẢ các lần
+    upload đã chuẩn hóa (để AI học tích lũy qua nhiều lần), dùng cho
+    tất cả module cần dữ liệu khách hàng (clustering, persona)."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    if upload_id is not None:
+        cursor.execute(
+            "SELECT customer_id, age, gender, job, location, total_spending, "
+            "pain_point, personality, interest_keywords, last_purchase_date "
+            "FROM canonical_customers WHERE upload_id=? ORDER BY id DESC LIMIT ?",
+            (upload_id, limit),
+        )
+    else:
+        cursor.execute(
+            "SELECT customer_id, age, gender, job, location, total_spending, "
+            "pain_point, personality, interest_keywords, last_purchase_date "
+            "FROM canonical_customers ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+    cols = ["customer_id", "age", "gender", "job", "location", "total_spending",
+            "pain_point", "personality", "interest_keywords", "last_purchase_date"]
+    rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 def reset_db():
@@ -148,8 +231,10 @@ def save_uploaded_dataset(upload_name: str, records: list, columns: list, upload
         "INSERT INTO uploaded_datasets VALUES (NULL, ?, ?, datetime('now'), ?, ?, ?, ?)",
         (upload_name, upload_source, len(records), json.dumps(columns, ensure_ascii=False), sample_text, raw_records_json)
     )
+    upload_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    return upload_id
 
 
 def load_persisted_uploaded_records(max_records: int = 300) -> list:
