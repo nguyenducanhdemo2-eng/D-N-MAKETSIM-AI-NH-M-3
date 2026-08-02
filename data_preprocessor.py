@@ -4,6 +4,12 @@ import re
 import asyncio
 import json
 
+# ĐÁNH DẤU PHIÊN BẢN: hiển thị ở sidebar "Trạng thái hệ thống" trên web_app.py.
+# Nếu con số này KHÔNG khớp với bản mới nhất bạn được cung cấp, nghĩa là
+# Streamlit đang chạy module data_preprocessor CŨ còn nằm trong bộ nhớ (do
+# import cục bộ + chưa khởi động lại hẳn process) -- không phải lỗi code.
+DATA_PREPROCESSOR_BUILD = "2026-08-02-fix3-dtype-duplicate-columns"
+
 # Import hàm gọi AI nội bộ từ file của bạn để tái sử dụng kết nối Ollama
 from persona_simulator import _call_ollama
 
@@ -35,13 +41,29 @@ class AdvancedETLPipeline:
     def apply_semantic_mapping(self):
         """Map cột của doanh nghiệp về Master Schema"""
         rename_dict = {}
+        used_canonical_fields = set()
         for item in self.mapping_config:
             source_col = item.get("Tên cột gốc", item.get("source_column"))
             ai_col = item.get("AI hiểu là", item.get("ai_column"))
-            if ai_col and ai_col not in ("unknown_column", "unmapped") and source_col in self.raw_df.columns:
-                rename_dict[source_col] = ai_col
+            if not ai_col or ai_col in ("unknown_column", "unmapped") or source_col not in self.raw_df.columns:
+                continue
+            if ai_col in used_canonical_fields:
+                # QUAN TRỌNG: nếu để 2 cột gốc khác nhau cùng map tới 1 trường chuẩn,
+                # DataFrame sau rename() sẽ có 2 CỘT TRÙNG TÊN -- khi đó mọi thao tác
+                # như .isna().any() không còn trả về 1 giá trị True/False đơn mà trả về
+                # 1 Series (1 giá trị cho mỗi cột trùng), gây lỗi "truth value of a
+                # Series is ambiguous". Chỉ giữ cột ĐẦU TIÊN map tới field này, các cột
+                # trùng sau đó coi như chưa map (giữ nguyên tên gốc, bị bỏ qua bên dưới).
+                continue
+            rename_dict[source_col] = ai_col
+            used_canonical_fields.add(ai_col)
 
         self.mapped_df = self.raw_df.rename(columns=rename_dict)
+        # Lưới an toàn bổ sung: phòng trường hợp trùng tên đến từ nguồn khác (không
+        # qua rename_dict ở trên), loại bỏ cột trùng tên, chỉ giữ cột xuất hiện đầu tiên.
+        if self.mapped_df.columns.duplicated().any():
+            self.mapped_df = self.mapped_df.loc[:, ~self.mapped_df.columns.duplicated()]
+
         available_cols = [col for col in MASTER_SCHEMA.keys() if col in self.mapped_df.columns]
         self.mapped_df = self.mapped_df[available_cols].copy()
         return self
