@@ -36,6 +36,24 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 importlib.invalidate_caches()
 
+
+def _safe_reload(module):
+    """Thử nạp lại module để lấy code mới nhất khi Streamlit tự chạy lại script.
+    Trên 1 số máy Windows (đặc biệt khi đường dẫn thư mục có ký tự đặc biệt),
+    importlib.reload() có thể không tìm lại được 'spec' của module và raise
+    ModuleNotFoundError dù file hoàn toàn hợp lệ. Trước đây lỗi này làm SẬP
+    TOÀN BỘ app -- giờ chỉ cảnh báo và dùng tạm bản module đã nạp sẵn."""
+    try:
+        importlib.reload(module)
+    except Exception as e:
+        st.warning(
+            f"⚠ Không thể tự động nạp lại module '{module.__name__}' ({e}). "
+            f"Ứng dụng vẫn chạy với bản đã nạp trước đó. Nếu bạn vừa sửa file "
+            f"'{module.__name__}.py', hãy dừng hẳn Streamlit (Ctrl+C) rồi chạy lại "
+            f"để chắc chắn dùng đúng bản mới nhất."
+        )
+    return module
+
 try:
     from config import DB_PATH, OLLAMA_MODEL, OLLAMA_HOST, NUM_CLUSTERS
 except ImportError:
@@ -45,7 +63,7 @@ except ImportError:
     NUM_CLUSTERS = 5
 
 import data_collector as data_collector_module
-importlib.reload(data_collector_module)
+_safe_reload(data_collector_module)
 collect_all = data_collector_module.collect_all
 load_uploaded_dataframe = data_collector_module.load_uploaded_dataframe
 build_ai_learning_report = data_collector_module.build_ai_learning_report
@@ -61,7 +79,7 @@ from persona_simulator import (
     chat_with_persona, check_ollama_connection,
 )
 import database as database_module
-importlib.reload(database_module)
+_safe_reload(database_module)
 save_simulation = getattr(database_module, 'save_simulation', None)
 save_uploaded_dataset = getattr(database_module, 'save_uploaded_dataset', None)
 get_uploaded_dataset_count = getattr(database_module, 'get_uploaded_dataset_count', None)
