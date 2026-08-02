@@ -268,38 +268,6 @@ def _normalize_column_name(column_name) -> str:
     return re.sub(r"_+", "_", text).strip("_")
 
 
-def _infer_canonical_column(column_name: str) -> tuple:
-    normalized = _normalize_column_name(column_name)
-    if not normalized:
-        return "unknown_column", 0.25
-
-    # Bộ quy tắc ánh xạ khớp 100% với MASTER_SCHEMA trong data_preprocessor.py
-    rules = {
-        "customer_id": ["ma_kh", "id", "customer_id", "stt", "makh", "khach_hang"],
-        "age": ["tuoi", "age", "nam_sinh", "dob", "tuoi_kh", "do_tuoi"],
-        "gender": ["gioi_tinh", "gender", "sex", "phai", "gioitinh"],
-        "location": ["dia_chi", "khu_vuc", "location", "tinh_thanh", "region", "dia_ban"],
-        "total_spending": ["gia_tri_don_hang", "chi_tieu", "thu_nhap", "spending", "doanh_thu", "price", "tong_tien", "thu_nhap_thang"],
-        "last_purchase_date": ["ngay_mua", "lan_cuoi", "date", "ngay_dat", "ngay", "created_at", "tan_suat_mua"],
-        "job": ["nghe_nghiep", "job", "linh_vuc", "chuyen_mon", "nganh_nghe", "chuc_vu"],
-        "pain_point": ["noi_dau", "van_de", "pain_point", "kho_khan", "thach_thuc", "khieu_nai"],
-        "personality": ["tinh_cach", "hanh_vi", "yeu_to_quyet_dinh", "personality", "so_thich", "tu_khoa", "hanh_vi_tuong_tac"]
-    }
-
-    # 1. So khớp chính xác tuyệt đối (Độ tin cậy 99%)
-    for canonical, aliases in rules.items():
-        if normalized in aliases:
-            return canonical, 0.99
-
-    # 2. So khớp chứa từ khóa (Độ tin cậy 85%)
-    for canonical, aliases in rules.items():
-        for alias in aliases:
-            if alias in normalized or normalized in alias:
-                return canonical, 0.85
-
-    return "unknown_column", 0.35
-
-
 def _parse_date_value(value) -> datetime | None:
     if value is None:
         return None
@@ -372,18 +340,19 @@ def build_ai_learning_report(records: list, file_name: str = "uploaded_file") ->
 
     columns = ordered_columns
 
-    # Mapping schema giờ do Ollama đảm nhiệm (xem schema_mapper.py), dựa trên
-    # tên cột + giá trị mẫu thực tế, thay vì chỉ so khớp alias cứng như trước.
-    # KHÔNG fallback ngầm nếu Ollama lỗi -- báo lỗi rõ ràng để người dùng biết
-    # và tự map tay qua bảng chỉnh sửa trên UI (theo yêu cầu đã xác nhận).
-    from schema_mapper import map_columns_with_ai, missing_required_fields, SchemaMappingError
+    # Mapping schema giờ 2 lớp (xem schema_mapper.py):
+    #  (1) rule-based tự khớp NGAY cột tên rõ ràng, không cần Ollama
+    #  (2) Ollama CHỈ xử lý cột còn lại, TỪNG CỘT MỘT (không phải cả mảng cùng
+    #      lúc) để giảm rủi ro model 7B trả JSON hỏng. Lỗi ở 1 cột không làm
+    #      hỏng kết quả của các cột khác -- vẫn báo lỗi rõ theo từng cột, không
+    #      âm thầm đoán mò (đúng yêu cầu đã xác nhận).
+    from schema_mapper import map_columns_with_ai, missing_required_fields, failed_columns
 
+    ai_mapping = map_columns_with_ai(columns, raw_fields_list)
+    failed_cols = failed_columns(ai_mapping)
     mapping_error = None
-    ai_mapping = []
-    try:
-        ai_mapping = map_columns_with_ai(columns, raw_fields_list)
-    except SchemaMappingError as e:
-        mapping_error = str(e)
+    if failed_cols:
+        mapping_error = "; ".join(f"cột '{f['source_column']}': {f['reasoning']}" for f in failed_cols)
 
     mapping = [
         {
@@ -393,6 +362,7 @@ def build_ai_learning_report(records: list, file_name: str = "uploaded_file") ->
             "editable": True,
             "confidence_display": m["confidence_display"],
             "reasoning": m.get("reasoning", ""),
+            "source": m.get("source", "ai"),
         }
         for m in ai_mapping
     ]
