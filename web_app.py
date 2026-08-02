@@ -116,33 +116,38 @@ dark_mode = st.session_state.get("dark_mode", False)
 # BẢNG MÀU
 # ==============================================================================
 # Sidebar: LUÔN có tông xanh navy tối, mát mắt (không đổi theo dark_mode)
+# ĐÃ ĐỔI accent tím (#8B7CFF) -> accent xanh dương corporate (#2D82B7) để đồng bộ
+# với bảng màu Corporate/Doanh nghiệp mới.
 SIDEBAR = {
-    "bg_from": "#1B2138", "bg_to": "#242B47",
-    "text": "#E7E9F5", "muted": "#8890A8",
+    "bg_from": "#0B2545", "bg_to": "#132F58",
+    "text": "#EAF0FB", "muted": "#8FA3C7",
     "card_bg": "rgba(255,255,255,0.06)", "border": "rgba(255,255,255,0.10)",
-    "accent": "#8B7CFF", "accent2": "#2FE6C4",
-    "success": "#35E6C4", "success_bg": "rgba(53,230,196,0.15)",
-    "warning": "#FFC069", "warning_bg": "rgba(255,192,105,0.15)",
-    "error": "#FF7A93", "error_bg": "rgba(255,122,147,0.15)",
+    "accent": "#2D82B7", "accent2": "#5AA6D6",
+    "success": "#33C481", "success_bg": "rgba(51,196,129,0.15)",
+    "warning": "#E0A542", "warning_bg": "rgba(224,165,66,0.15)",
+    "error": "#E2635A", "error_bg": "rgba(226,99,90,0.15)",
 }
 
 # Nội dung chính: đổi theo công tắc dark_mode
+# ĐÃ ĐỔI SANG BẢNG MÀU CORPORATE/DOANH NGHIỆP (xanh navy - xanh dương - trắng)
+# thay cho tông tím-ngọc (#7C4DFF/#00C2A8) trước đây, theo yêu cầu thiết kế lại
+# giao diện chuyên nghiệp hơn cho demo khách hàng B2B.
 LIGHT = {
-    "bg": "#F7F7FC", "card_bg": "#FFFFFF", "text": "#1F2430", "muted": "#6B7280",
-    "border": "#E7E7F0", "accent": "#7C4DFF",
-    "positive": "#00C9A7", "positive_bg": "#E6FBF6",
-    "negative": "#FF5C7A", "negative_bg": "#FFEAEF",
-    "neutral": "#FFB84D", "neutral_bg": "#FFF6E9",
-    "chip_bg": "#EEF0FF", "chip_text": "#5B34D6",
-    "score_track": "#EEF0F5",
+    "bg": "#F4F6F9", "card_bg": "#FFFFFF", "text": "#14213D", "muted": "#5B6B85",
+    "border": "#E2E7EF", "accent": "#1B4F91",
+    "positive": "#1F8A5F", "positive_bg": "#E4F5EC",
+    "negative": "#C0392B", "negative_bg": "#FBE9E7",
+    "neutral": "#C9821A", "neutral_bg": "#FBF0DF",
+    "chip_bg": "#E5F1F8", "chip_text": "#1B4F91",
+    "score_track": "#E2E7EF",
 }
 DARK = {
-    "bg": "#0F1320", "card_bg": "#1A1F2E", "text": "#E8EAF2", "muted": "#98A0B3",
-    "border": "#2A3145", "accent": "#9C8CFF",
-    "positive": "#35E6C4", "positive_bg": "rgba(53,230,196,0.15)",
-    "negative": "#FF7A93", "negative_bg": "rgba(255,122,147,0.15)",
-    "neutral": "#FFC069", "neutral_bg": "rgba(255,192,105,0.15)",
-    "chip_bg": "rgba(124,77,255,0.20)", "chip_text": "#C9BFFF",
+    "bg": "#0B2545", "card_bg": "#132F58", "text": "#EAF0FB", "muted": "#8FA3C7",
+    "border": "#22406E", "accent": "#2D82B7",
+    "positive": "#33C481", "positive_bg": "rgba(51,196,129,0.15)",
+    "negative": "#E2635A", "negative_bg": "rgba(226,99,90,0.15)",
+    "neutral": "#E0A542", "neutral_bg": "rgba(224,165,66,0.15)",
+    "chip_bg": "rgba(45,130,183,0.20)", "chip_text": "#BEE0F5",
     "score_track": "rgba(255,255,255,0.08)",
 }
 PAL = DARK if dark_mode else LIGHT
@@ -174,11 +179,11 @@ hr {{ border-color: {PAL['border']}; }}
 
 /* Banner tiêu đề gradient (giữ nguyên ở cả 2 chế độ) */
 .msai-hero {{
-    background: linear-gradient(135deg, #7C4DFF 0%, #00C2A8 100%);
+    background: linear-gradient(135deg, #0B2545 0%, #1B4F91 100%);
     padding: 30px 36px;
     border-radius: 20px;
     margin-bottom: 26px;
-    box-shadow: 0 10px 30px rgba(124, 77, 255, 0.28);
+    box-shadow: 0 10px 30px rgba(11, 37, 69, 0.28);
 }}
 .msai-hero h1 {{ color: #ffffff !important; margin: 0; font-size: 30px; font-weight: 800; }}
 .msai-hero p {{ color: rgba(255,255,255,0.9); margin: 8px 0 0 0; font-size: 15px; }}
@@ -199,16 +204,16 @@ hr {{ border-color: {PAL['border']}; }}
 
 /* Thanh điểm số gradient */
 .msai-score-track {{ background:{PAL['score_track']}; border-radius:8px; height:10px; width:100%; overflow:hidden; }}
-.msai-score-fill {{ height:100%; background:linear-gradient(90deg,#7C4DFF,#00C2A8); border-radius:8px; }}
+.msai-score-fill {{ height:100%; background:linear-gradient(90deg,#1B4F91,#2D82B7); border-radius:8px; }}
 
 /* Nút bấm bo tròn dạng viên thuốc, nền gradient nổi bật, chữ trắng đậm luôn rõ
    (mặc định - vùng nội dung chính). Sửa lỗi chữ "biến mất" trên nền trắng cũ. */
 div.stButton > button, div.stFormSubmitButton > button {{
     border-radius: 999px !important;
     font-weight: 700 !important;
-    background: linear-gradient(90deg, #7C4DFF, #00C2A8) !important;
+    background: linear-gradient(90deg, #1B4F91, #2D82B7) !important;
     border: none !important;
-    box-shadow: 0 4px 14px rgba(124, 77, 255, 0.3);
+    box-shadow: 0 4px 14px rgba(11, 37, 69, 0.3);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
 }}
 div.stButton > button p, div.stFormSubmitButton > button p,
@@ -218,7 +223,7 @@ div.stButton > button div, div.stFormSubmitButton > button div {{
 }}
 div.stButton > button:hover, div.stFormSubmitButton > button:hover {{
     transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(124, 77, 255, 0.45);
+    box-shadow: 0 6px 20px rgba(11, 37, 69, 0.45);
 }}
 
 /* Tab dạng viên thuốc (pill) bo tròn, có màu khi active.
@@ -271,9 +276,9 @@ div.stButton > button:hover, div.stFormSubmitButton > button:hover {{
 [data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"],
 [data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"],
 [data-testid="stTab"][aria-selected="true"] {{
-    background: linear-gradient(90deg, #7C4DFF, #00C2A8) !important;
+    background: linear-gradient(90deg, #1B4F91, #2D82B7) !important;
     border-color: transparent !important;
-    box-shadow: 0 4px 14px rgba(124,77,255,0.35) !important;
+    box-shadow: 0 4px 14px rgba(11,37,69,0.35) !important;
 }}
 .stTabs [data-baseweb="tab"][aria-selected="true"] p,
 .stTabs [data-baseweb="tab"][aria-selected="true"] span,
@@ -386,6 +391,128 @@ div.stButton > button:hover, div.stFormSubmitButton > button:hover {{
     background: rgba(139,124,255,0.25) !important;
     border-color: {SIDEBAR['accent']} !important;
 }}
+
+/* ================================================================
+   MENU ĐIỀU HƯỚNG SIDEBAR (st.radio "hoá trang" thành nav-list, thay
+   cho pill-tab ngang cũ) — best effort: BaseWeb/Streamlit có thể đổi
+   cấu trúc DOM giữa các phiên bản, :has() cần trình duyệt tương đối
+   mới (Chrome/Edge/Safari bản gần đây); nếu không khớp, radio vẫn
+   hoạt động bình thường, chỉ mất phần tô nổi bật mục đang chọn.
+   ================================================================ */
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] {{
+    gap: 2px !important;
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label {{
+    width: 100%;
+    padding: 9px 10px !important;
+    border-radius: 8px !important;
+    margin: 0 !important;
+    border-left: 2px solid transparent;
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover {{
+    background: rgba(255,255,255,0.06);
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-child {{
+    display: none !important; /* ẩn chấm tròn radio mặc định */
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:last-child {{
+    font-size: 13.5px !important;
+    color: {SIDEBAR['muted']} !important;
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label:has(input:checked) {{
+    background: rgba(45,130,183,0.18);
+    border-left: 2px solid {SIDEBAR['accent']};
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] label:has(input:checked) > div:last-child {{
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
+}}
+
+/* Nhãn nhóm điều hướng (TỔNG QUAN / CHIẾN DỊCH / DỮ LIỆU / HỆ THỐNG) chèn
+   bằng ::before trước từng mục tương ứng trong NAV_OPTIONS — CSS thuần,
+   KHÔNG đụng vào logic Python của st.radio (an toàn, không có rủi ro
+   gãy state điều hướng). Thứ tự phải khớp đúng thứ tự NAV_OPTIONS bên dưới:
+   1=Tổng quan, 2=Chiến dịch & SWOT, 3=Dữ liệu & phân cụm, 4=Trò chuyện 1-1,
+   5=Lịch sử học AI. */
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(1)::before {{
+    content: "TỔNG QUAN";
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(2)::before {{
+    content: "CHIẾN DỊCH";
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(3)::before {{
+    content: "DỮ LIỆU";
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(5)::before {{
+    content: "HỆ THỐNG";
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(1)::before,
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(2)::before,
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(3)::before,
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(5)::before {{
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    color: {SIDEBAR['muted']};
+    margin: 14px 0 6px 10px;
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(1)::before {{
+    margin-top: 2px;
+}}
+
+/* Bộ chọn dạng viên thuốc (pill) cho st.radio nằm trong NỘI DUNG CHÍNH
+   (vd: công tắc "Xem: Tổng quan / Xem: Kết quả chiến dịch") — tách riêng
+   khỏi CSS của sidebar ở trên để không đổi màu menu điều hướng bên trái. */
+section.main div[data-testid="stRadio"] > div[role="radiogroup"] {{
+    gap: 8px !important;
+}}
+section.main div[data-testid="stRadio"] > div[role="radiogroup"] > label {{
+    background-color: {PAL['card_bg']} !important;
+    border: 1px solid {PAL['border']} !important;
+    border-radius: 999px !important;
+    padding: 8px 18px !important;
+    margin: 0 !important;
+}}
+section.main div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:last-child {{
+    color: {PAL['muted']} !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+}}
+section.main div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {{
+    background: linear-gradient(90deg, #1B4F91, #2D82B7) !important;
+    border-color: transparent !important;
+}}
+section.main div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) > div:last-child {{
+    color: #FFFFFF !important;
+}}
+
+/* ---------- Thanh trên cùng + Lời chào (Tổng quan) ---------- */
+.msai-topbar-crumb {{ font-size:13px; color:{PAL['muted']}; margin-bottom:2px; }}
+.msai-topbar-crumb b {{ color:{PAL['text']}; font-weight:700; }}
+.msai-greeting h2 {{ color:{PAL['text']}; font-size:26px; font-weight:800; margin:6px 0 2px 0; }}
+.msai-greeting p {{ color:{PAL['muted']}; font-size:14.5px; margin:0 0 18px 0; }}
+
+/* ---------- Thẻ KPI kiểu mới (icon tròn góc phải, số lớn, dòng phụ) ---------- */
+.msai-kpi-card {{
+    background:{PAL['card_bg']}; border:1px solid {PAL['border']}; border-radius:16px;
+    padding:18px 20px; box-shadow: 0 2px 10px rgba(20,33,61,0.04);
+}}
+.msai-kpi-label {{ font-size:12.5px; color:{PAL['muted']}; font-weight:600; }}
+.msai-kpi-icon {{
+    width:30px; height:30px; border-radius:8px; display:flex; align-items:center;
+    justify-content:center; font-size:15px; float:right;
+}}
+.msai-kpi-value {{ font-size:26px; font-weight:800; color:{PAL['text']}; margin-top:14px; clear:both; }}
+.msai-kpi-sub {{ font-size:12.5px; color:{PAL['muted']}; margin-top:4px; }}
+
+/* ---------- Thẻ trạng thái rỗng (chưa có dữ liệu) kiểu CTA ---------- */
+.msai-empty-card {{
+    background: linear-gradient(135deg, #0B2545 0%, #1B4F91 100%);
+    border-radius:16px; padding:20px 22px;
+}}
+.msai-empty-card h4 {{ color:#FFFFFF !important; margin:0 0 6px 0; font-size:16px; }}
+.msai-empty-card p {{ color:rgba(255,255,255,0.85) !important; font-size:13.5px; margin:0 0 14px 0; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -681,7 +808,9 @@ def render_ai_learning_center(report: dict):
             with st.status("🚀 Đang khởi chạy quy trình Tiền xử lý dữ liệu (ETL & AI)...", expanded=True) as status:
                 try:
                     import asyncio
-                    from data_preprocessor import run_advanced_etl
+                    import data_preprocessor as data_preprocessor_module
+                    _safe_reload(data_preprocessor_module)
+                    run_advanced_etl = data_preprocessor_module.run_advanced_etl
                     
                     raw_data = st.session_state.get("uploaded_records", [])
                     mapping = st.session_state.get("ai_learning_mapping", [])
@@ -726,6 +855,7 @@ def render_ai_learning_center(report: dict):
 
                     status.update(label=f"Hoàn tất! Chuẩn hóa thành công {len(clean_data)} hồ sơ khách hàng.", state="complete")
                     st.success("Hệ thống đã khóa dữ liệu chuẩn (Canonical Data Model). Sẵn sàng chuyển sang Mô phỏng Synthetic Data.")
+                    st.info("👉 Xem chi tiết đầy đủ (kể cả các lần trước) ở tab **[4] Lịch sử học AI** phía dưới.")
                     
                     render_learning_audit_panel(audit_summary, audit_id=st.session_state.get("last_audit_id"), clean_data=clean_data)
 
@@ -760,8 +890,24 @@ with st.sidebar:
     st.toggle("Chế độ tối cho nội dung chính", key="dark_mode")
 
     st.markdown("---")
+    st.markdown('<div class="msai-sidebar-label">Điều hướng</div>', unsafe_allow_html=True)
+    NAV_OPTIONS = [
+        "🏠 Tổng quan",
+        "🎯 Chiến dịch & SWOT",
+        "🗂️ Dữ liệu & phân cụm",
+        "💬 Trò chuyện 1-1",
+        "📈 Lịch sử học AI",
+    ]
+    nav_choice = st.radio("Điều hướng", NAV_OPTIONS, label_visibility="collapsed", key="nav_choice")
+
+    st.markdown("---")
     st.markdown('<div class="msai-sidebar-label">Trạng thái hệ thống</div>', unsafe_allow_html=True)
     st.markdown(f'<span class="msai-sidebar-chip">Model: {OLLAMA_MODEL}</span>', unsafe_allow_html=True)
+    try:
+        from data_preprocessor import DATA_PREPROCESSOR_BUILD
+        st.caption(f"🏷 data_preprocessor build: `{DATA_PREPROCESSOR_BUILD}`")
+    except Exception:
+        st.caption("🏷 Không đọc được phiên bản data_preprocessor.py hiện tại.")
     st.write("")
 
     if st.button("Kiểm tra kết nối Ollama", use_container_width=True):
@@ -866,197 +1012,408 @@ if st.session_state.get("ai_learning_report"):
     render_ai_learning_center(st.session_state["ai_learning_report"])
 
 
-tab_sim, tab_data, tab_chat, tab_audit = st.tabs([
-    "[1] Mô phỏng & SWOT",
-    "[2] Dữ liệu & phân cụm",
-    "[3] Trò chuyện 1-1",
-    "[4] Lịch sử học AI"
-])
+# ĐÃ THAY st.tabs() BẰNG MENU ĐIỀU HƯỚNG Ở SIDEBAR (biến `nav_choice` được đọc
+# từ st.radio trong khối `with st.sidebar:` phía trên) — khớp với bản thiết kế
+# Corporate/Doanh nghiệp đã duyệt (điều hướng nằm ở sidebar, không phải tab
+# ngang phía trên). Mỗi khối nội dung bên dưới chỉ hiển thị khi đúng mục đang
+# được chọn.
+
+# ==============================================================================
+# TAB TỔNG QUAN (MỚI) — Dashboard tổng hợp KPI, thêm theo bản thiết kế lại giao
+# diện Corporate/Doanh nghiệp. KHÔNG gọi thêm logic AI/pipeline nào mới — chỉ
+# đọc lại dữ liệu đã có sẵn trong SQLite qua get_all_scenarios()/
+# get_results_by_scenario() (đã tồn tại từ trước) để tổng hợp số liệu hiển thị.
+# ==============================================================================
+if nav_choice == "🏠 Tổng quan":
+    import datetime as _dt
+
+    def _greeting_name() -> str:
+        """Suy ra tên hiển thị từ email đăng nhập (KHÔNG bịa tên — nếu chưa có
+        email thì dùng 'bạn' chung chung)."""
+        email = st.session_state.get("user_email")
+        if not email:
+            return "bạn"
+        local_part = email.split("@")[0]
+        cleaned = local_part.replace(".", " ").replace("_", " ").replace("-", " ").strip()
+        return cleaned.title() if cleaned else "bạn"
+
+    def _greeting_phrase() -> str:
+        hour = _dt.datetime.now().hour
+        if hour < 11:
+            return "Chào buổi sáng"
+        elif hour < 14:
+            return "Chào buổi trưa"
+        elif hour < 18:
+            return "Chào buổi chiều"
+        return "Chào buổi tối"
+
+    # ---------- Thanh trên cùng: breadcrumb + nút hành động ----------
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        st.markdown('<div class="msai-topbar-crumb">Tổng quan / <b>Dashboard</b></div>', unsafe_allow_html=True)
+    with top_r:
+        if st.button("➕ Chiến dịch mới", use_container_width=True):
+            st.session_state["nav_choice"] = "🎯 Chiến dịch & SWOT"
+            st.rerun()
+
+    st.markdown(
+        f'<div class="msai-greeting"><h2>{_greeting_phrase()}, {_greeting_name()}</h2>'
+        f'<p>Đây là tình hình mô phỏng khách hàng AI của bạn.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    all_scenarios = get_all_scenarios() if os.path.exists(DB_PATH) else []
+
+    if not all_scenarios:
+        st.markdown(
+            '<div class="msai-empty-card"><h4>Bắt đầu mô phỏng đầu tiên</h4>'
+            '<p>Nhập một ý tưởng chiến dịch và xem hàng chục khách hàng ảo phản ứng chỉ trong vài phút.</p></div>',
+            unsafe_allow_html=True,
+        )
+        st.write("")
+        if st.button("Tạo chiến dịch mới", type="primary"):
+            st.session_state["nav_choice"] = "🎯 Chiến dịch & SWOT"
+            st.rerun()
+    else:
+        view_choice = st.radio(
+            "Chế độ xem", ["Xem: Tổng quan", "Xem: Kết quả chiến dịch"],
+            horizontal=True, label_visibility="collapsed", key="overview_view_toggle",
+        )
+
+        total_campaigns = len(all_scenarios)
+        total_personas = 0
+        total_pos = total_all = 0
+        star_sum = 0
+        per_scenario_rows = []
+        for sid, txt, stars in all_scenarios:
+            df_r = get_results_by_scenario(sid)
+            n = len(df_r)
+            pos = int((df_r["sentiment"] == "positive").sum()) if n else 0
+            total_personas += n
+            total_all += n
+            total_pos += pos
+            star_sum += stars
+            per_scenario_rows.append((sid, txt, stars, df_r, n, pos))
+
+        avg_positive_pct = round(100 * total_pos / total_all, 1) if total_all else 0.0
+        avg_stars = round(star_sum / total_campaigns, 1) if total_campaigns else 0.0
+
+        # Thẻ KPI dạng HTML tuỳ chỉnh. LƯU Ý: hệ thống hiện KHÔNG lưu lịch sử
+        # theo thời gian (không có mốc "tuần trước") nên các thẻ này CHỈ hiển
+        # thị số liệu thật tính đến hiện tại — không bịa % tăng/giảm giả.
+        def _kpi_card(label, value, icon, tint_bg, tint_fg, sub=""):
+            sub_html = f'<div class="msai-kpi-sub">{sub}</div>' if sub else ""
+            return f'''
+            <div class="msai-kpi-card">
+                <div class="msai-kpi-icon" style="background:{tint_bg};color:{tint_fg};">{icon}</div>
+                <div class="msai-kpi-label">{label}</div>
+                <div class="msai-kpi-value">{value}</div>
+                {sub_html}
+            </div>
+            '''
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(_kpi_card("Chiến dịch đã chạy", total_campaigns, "🎯", PAL["chip_bg"], PAL["accent"]), unsafe_allow_html=True)
+        with k2:
+            st.markdown(_kpi_card("Persona đã mô phỏng", f"{total_personas:,}", "🗂️", PAL["positive_bg"], PAL["positive"],
+                                   sub=f"trên {total_campaigns} chiến dịch"), unsafe_allow_html=True)
+        with k3:
+            st.markdown(_kpi_card("Tỉ lệ phản hồi tích cực TB", f"{avg_positive_pct}%", "📈", PAL["neutral_bg"], PAL["neutral"],
+                                   sub=f"trên {total_all} phản hồi"), unsafe_allow_html=True)
+        with k4:
+            st.markdown(_kpi_card("Đánh giá sao trung bình", f"{avg_stars}/5", "⭐", PAL["chip_bg"], PAL["accent"]), unsafe_allow_html=True)
+
+        st.write("")
+
+        if view_choice == "Xem: Kết quả chiến dịch":
+            # ---------- Bảng đầy đủ tất cả chiến dịch (thay cho danh sách rút gọn) ----------
+            section_title("Kết quả tất cả chiến dịch")
+            table_rows = [{
+                "Mã": sid,
+                "Kịch bản": txt[:90] + ("..." if len(txt) > 90 else ""),
+                "Sao": stars,
+                "Số persona": n,
+                "Tích cực (%)": round(100 * pos / n, 1) if n else 0.0,
+            } for sid, txt, stars, _df_r, n, pos in per_scenario_rows]
+            st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+            st.caption("Bấm vào một chiến dịch cụ thể ở mục **Chiến dịch & SWOT** (sidebar) để xem đầy đủ báo cáo và phỏng vấn từng khách hàng ảo.")
+        else:
+            # ---------- 2 cột: Hoạt động gần đây | Phân bố tâm lý khách hàng ----------
+            col_left, col_right = st.columns([3, 2])
+
+            with col_left:
+                section_title("Hoạt động mô phỏng gần đây")
+                search_kw = st.text_input(
+                    "Tìm chiến dịch", placeholder="🔍 Tìm chiến dịch theo từ khoá...",
+                    label_visibility="collapsed", key="overview_search",
+                )
+                filtered = per_scenario_rows
+                if search_kw.strip():
+                    kw = search_kw.strip().lower()
+                    filtered = [r for r in per_scenario_rows if kw in r[1].lower()]
+
+                with st.container(border=True):
+                    if not filtered:
+                        st.caption("Không tìm thấy chiến dịch nào khớp từ khoá.")
+                    for sid, txt, stars, df_r, n, pos in filtered[:6]:
+                        neu = int((df_r["sentiment"] == "neutral").sum()) if n else 0
+                        neg = max(0, n - pos - neu)
+                        pos_pct = round(100 * pos / n) if n else 0
+                        neu_pct = round(100 * neu / n) if n else 0
+                        neg_pct = max(0, 100 - pos_pct - neu_pct) if n else 0
+                        overall_sentiment = "positive" if pos >= neu and pos >= neg else ("neutral" if neu >= neg else "negative")
+
+                        c1, c2, c3 = st.columns([4, 2, 2])
+                        with c1:
+                            st.markdown(f"**#{sid} — {txt[:60]}{'...' if len(txt) > 60 else ''}**")
+                            st.caption(f"{n} persona")
+                        with c2:
+                            st.markdown("★" * stars + "☆" * (5 - stars))
+                        with c3:
+                            st.markdown(sentiment_badge_html(overall_sentiment), unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div style="display:flex;height:8px;border-radius:5px;overflow:hidden;margin:4px 0 2px 0;">'
+                            f'<div style="width:{pos_pct}%;background:{PAL["positive"]};"></div>'
+                            f'<div style="width:{neu_pct}%;background:{PAL["neutral"]};"></div>'
+                            f'<div style="width:{neg_pct}%;background:{PAL["negative"]};"></div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown("---")
+
+                if len(filtered) > 6:
+                    st.caption(f"...và {len(filtered) - 6} chiến dịch khác. Xem đầy đủ ở chế độ **Xem: Kết quả chiến dịch** phía trên.")
+
+            with col_right:
+                section_title("Phân bố tâm lý khách hàng")
+                if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
+                    try:
+                        with st.spinner("Đang phân cụm..."):
+                            n_eff = max(1, min(NUM_CLUSTERS, len(st.session_state['df_raw'])))
+                            clusters = cluster_customer_psychology(st.session_state['df_raw'], n_clusters=n_eff)
+                        sizes = clusters.get("cluster_sizes", {})
+                        total_sz = sum(sizes.values()) or 1
+                        with st.container(border=True):
+                            for c_id, keywords in clusters.get("cluster_keywords", {}).items():
+                                size = sizes.get(c_id, 0)
+                                pct = round(100 * size / total_sz)
+                                st.markdown(f"**Nhóm tâm lý #{c_id}** &nbsp; <span style='color:{PAL['muted']};font-size:12.5px;'>{size} người</span>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f'<div class="msai-score-track" style="margin:4px 0 8px 0;">'
+                                    f'<div class="msai-score-fill" style="width:{pct}%;"></div></div>',
+                                    unsafe_allow_html=True,
+                                )
+                                st.markdown(keyword_chips_html(keywords[:4]), unsafe_allow_html=True)
+                                st.write("")
+                    except Exception as e:
+                        st.error(f"Lỗi khi phân cụm: {e}")
+                else:
+                    st.markdown(
+                        '<div class="msai-empty-card"><h4>Chưa có dữ liệu khách hàng</h4>'
+                        '<p>Tải file CSV/XLSX khách hàng ở sidebar để xem phân bố tâm lý theo nhóm.</p></div>',
+                        unsafe_allow_html=True,
+                    )
 
 # ==============================================================================
 # TAB 1: MÔ PHỎNG CHIẾN DỊCH & BÁO CÁO SWOT
 # ==============================================================================
-with tab_sim:
+if nav_choice == "🎯 Chiến dịch & SWOT":
     section_title("Chạy mô phỏng phản ứng khách hàng đa luồng")
 
-with st.container(border=True):
-    if st.session_state.get("ai_learning_report") and not st.session_state.get("ai_learning_confirmed", False):       
-                    st.warning("Hãy xác nhận ở AI Learning Center trước khi chạy Synthetic Data hoặc mô phỏng Digital Twin.")
-                    submit_btn = False
-    else:
-                    submit_btn = None
+    with st.container(border=True):
+        if st.session_state.get("ai_learning_report") and not st.session_state.get("ai_learning_confirmed", False):       
+                        st.warning("Hãy xác nhận ở AI Learning Center trước khi chạy Synthetic Data hoặc mô phỏng Digital Twin.")
+                        submit_btn = False
+        else:
+                        submit_btn = None
 
-    with st.form("form_scenario"):
-                    scenario_input = st.text_area(
-                        "Nhập kịch bản chương trình Marketing / Sale:",
-                        value="CHIẾN DỊCH GIẢM GIÁ 30% cho các sản phẩm quần áo mùa hè",
-                        height=100
-                    )
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        n_persona = st.slider(
-                            "Tổng số khách hàng ảo mô phỏng (tối đa 100)",
-                            5, MAX_SIMULATED_PERSONAS, 30,
-                            help="Hệ thống sẽ phân bổ đều số persona vào các nhóm tâm lý.")
-                        st.caption("Giới hạn tối đa 100 khách hàng ảo mỗi lần chạy. Dữ liệu gốc vẫn có thể nhiều hơn để đảm bảo đa dạng.")
-                    with col_b:
-                        use_online = st.checkbox("Cào thêm tin tức/xu hướng online (có thể chậm)", value=True)
-                    submit_btn = st.form_submit_button("Bắt đầu phân tích & mô phỏng", use_container_width=True) if submit_btn is None else submit_btn
-
-    if submit_btn:
-            if not scenario_input.strip():
-                st.error("Vui lòng nhập nội dung chiến dịch trước khi chạy.")
-            else:
-                connected, model_ready, _ = check_ollama_connection()
-                st.session_state["ollama_status"] = (connected, model_ready, st.session_state.get("ollama_status", (0, 0, []))[2])
-
-                if not connected:
-                    st.error(f"Không kết nối được Ollama tại `{OLLAMA_HOST}`. Hãy bật Ollama (`ollama serve`) rồi bấm chạy lại.")
-                else:
-                    if not model_ready:
-                        st.warning(f"Chưa thấy model `{OLLAMA_MODEL}` trên máy — hệ thống vẫn sẽ thử chạy, có thể lỗi.")
-                    try:
-                        with st.status("Hệ thống đang thực thi luồng AI (Pipeline)...", expanded=True) as status:
-                            st.write("[Bước 1/4] Thu thập dữ liệu (Online + File tải lên / DATA/)...")
-                            raw_df = collect_all(
-                                uploaded_records=st.session_state.get("uploaded_records"),
-                                enable_online_scrape=use_online,
-                            )
-
-                            if raw_df.empty:
-                                status.update(label="Không có dữ liệu nào để phân tích!", state="error")
-                                st.error("Không thu thập được dữ liệu nào (cả online lẫn file). "
-                                        "Hãy tải file khách hàng lên ở sidebar hoặc bật cào online.")
-                                st.stop()
-
-                            st.write("[Bước 2/4] Phân cụm tâm lý khách hàng bằng K-Means...")
-                            n_clusters_eff = max(1, min(NUM_CLUSTERS, len(raw_df)))
-                            cluster_result = cluster_customer_psychology(raw_df, n_clusters=n_clusters_eff)
-
-                            st.write("[Bước 3/4] Sinh Persona ảo & chạy mô phỏng Asyncio đa luồng...")
-                            personas = build_personas_with_fallback(cluster_result, n_persona)
-
-                            progress_bar = st.progress(0)
-                            progress_text = st.empty()
-                            def _update_progress(done, total):
-                                pct = int(done / total * 100) if total else 0
-                                progress_bar.progress(pct)
-                                progress_text.info(f"Đang mô phỏng {done}/{total} khách hàng ảo ({pct}%)")
-
-                            results, analysis, fail_count = run_simulation_with_progress(
-                                personas, scenario_input, progress_callback=_update_progress
-                            )
-                            progress_text.success("Mô phỏng đã hoàn tất.")
-
-                            if not results:
-                                status.update(label="AI không phản hồi được lượt mô phỏng nào!", state="error")
-                                st.error("Không nhận được phản hồi hợp lệ nào từ AI. Kiểm tra lại Ollama rồi thử lại.")
-                                st.stop()
-
-                            st.write("[Bước 4/4] Lưu kết quả vào SQLite Database...")
-                            sid = save_simulation(scenario_input, results, analysis)
-
-                            status.update(label="Hoàn tất mô phỏng! Xem báo cáo bên dưới.", state="complete", expanded=False)
-
-                        if fail_count > 0:
-                            st.warning(f"Có {fail_count}/{len(personas)} khách hàng ảo bị lỗi kết nối trong lúc mô phỏng "
-                                    f"(đã tự động bỏ qua, không tính vào kết quả).")
-                        st.toast("Đã lưu kết quả thành công vào Database!", icon="💾")
-                        st.session_state["selected_scenario_id"] = sid
-
-                    except Exception as e:
-                        st.error(f"Đã có lỗi ngoài dự kiến trong quá trình mô phỏng: {e}")
-
-    st.write("")
-
-    # --- XEM BÁO CÁO: chiến dịch vừa chạy hoặc bất kỳ chiến dịch nào trong lịch sử ---
-    scenarios = get_all_scenarios() if os.path.exists(DB_PATH) else []
-    if scenarios:
-        options = {
-            f"#{sid} - {txt[:60]}{'...' if len(txt) > 60 else ''} ({stars}⭐)": sid
-            for sid, txt, stars in scenarios
-        }
-        label_list = list(options.keys())
-        default_sid = st.session_state.get("selected_scenario_id", scenarios[0][0])
-        default_label = next((k for k, v in options.items() if v == default_sid), label_list[0])
-
-        section_title("Báo cáo chiến dịch")
-        chosen_label = st.selectbox("Xem lại báo cáo chiến dịch:", label_list, index=label_list.index(default_label))
-        sid = options[chosen_label]
-        st.session_state["selected_scenario_id"] = sid
-
-        row = get_scenario_by_id(sid)
-        if row:
-            _, text, s, w, summ, stars = row
-            df_res_all = get_results_by_scenario(sid)
-
-            # --- HÀNG CHỈ SỐ NHANH ---
-            with st.container(border=True):
-                total_n = len(df_res_all)
-                pos_n = int((df_res_all["sentiment"] == "positive").sum()) if total_n else 0
-                neg_n = int((df_res_all["sentiment"] == "negative").sum()) if total_n else 0
-                neu_n = int((df_res_all["sentiment"] == "neutral").sum()) if total_n else 0
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Đánh giá", f"{stars} / 5")
-                m2.metric("Tích cực", f"{pos_n}/{total_n}" if total_n else "0")
-                m3.metric("Tiêu cực", f"{neg_n}/{total_n}" if total_n else "0")
-                m4.metric("Trung lập", f"{neu_n}/{total_n}" if total_n else "0")
-                st.info(f"**Tóm tắt chiến lược:** {summ}")
-
-            st.write("")
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                section_title("Phân tích SWOT")
-                with st.container(border=True):
-                    st.markdown("**Điểm mạnh (Strengths)**")
-                    st.write(s)
-                with st.container(border=True):
-                    st.markdown("**Điểm yếu (Weaknesses)**")
-                    st.write(w)
-            with col2:
-                section_title("Biểu đồ quyết định mua hàng")
-                with st.container(border=True):
-                    if not df_res_all.empty:
-                        sentiment_counts = df_res_all['sentiment'].value_counts()
-                        color_map = {"positive": PAL["positive"], "negative": PAL["negative"], "neutral": PAL["neutral"]}
-                        colors = [color_map.get(k, "#9AA0AC") for k in sentiment_counts.index]
-
-                        fig, ax = plt.subplots(figsize=(5.5, 4.2))
-                        fig.patch.set_alpha(0)
-                        wedges, texts, autotexts = ax.pie(
-                            sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%',
-                            startangle=90, colors=colors, pctdistance=0.8,
-                            wedgeprops=dict(width=0.42, edgecolor=PAL["card_bg"], linewidth=2)
+        with st.form("form_scenario"):
+                        scenario_input = st.text_area(
+                            "Nhập kịch bản chương trình Marketing / Sale:",
+                            value="CHIẾN DỊCH GIẢM GIÁ 30% cho các sản phẩm quần áo mùa hè",
+                            height=100
                         )
-                        for t in texts:
-                            t.set_color(PAL["text"])
-                        for t in autotexts:
-                            t.set_color("white")
-                            t.set_fontweight("bold")
-                        ax.axis('equal')
-                        st.pyplot(fig, use_container_width=True)
-                    else:
-                        st.info("Chưa có dữ liệu phản hồi chi tiết cho chiến dịch này.")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            n_persona = st.slider(
+                                "Tổng số khách hàng ảo mô phỏng (tối đa 100)",
+                                5, MAX_SIMULATED_PERSONAS, 30,
+                                help="Hệ thống sẽ phân bổ đều số persona vào các nhóm tâm lý.")
+                            st.caption("Giới hạn tối đa 100 khách hàng ảo mỗi lần chạy. Dữ liệu gốc vẫn có thể nhiều hơn để đảm bảo đa dạng.")
+                        with col_b:
+                            use_online = st.checkbox("Cào thêm tin tức/xu hướng online (có thể chậm)", value=True)
+                        submit_btn = st.form_submit_button("Bắt đầu phân tích & mô phỏng", use_container_width=True) if submit_btn is None else submit_btn
 
-            st.write("")
-            section_title("Feed phản hồi từ khách hàng ảo")
-            with st.container(border=True):
-                df_details = df_res_all.rename(columns={
-                    "persona_name": "Khách Hàng", "score": "Điểm",
-                    "sentiment": "Thái Độ", "reasoning": "Lý Do Tâm Lý"
-                })
-                if not df_details.empty:
-                    st.dataframe(style_sentiment_column(df_details, "Thái Độ"), use_container_width=True)
+        if submit_btn:
+                if not scenario_input.strip():
+                    st.error("Vui lòng nhập nội dung chiến dịch trước khi chạy.")
                 else:
-                    st.caption("Chưa có phản hồi nào.")
-    else:
-        st.info("Chưa có chiến dịch nào được chạy. Hãy nhập kịch bản và bấm nút phía trên.")
+                    connected, model_ready, _ = check_ollama_connection()
+                    st.session_state["ollama_status"] = (connected, model_ready, st.session_state.get("ollama_status", (0, 0, []))[2])
+
+                    if not connected:
+                        st.error(f"Không kết nối được Ollama tại `{OLLAMA_HOST}`. Hãy bật Ollama (`ollama serve`) rồi bấm chạy lại.")
+                    else:
+                        if not model_ready:
+                            st.warning(f"Chưa thấy model `{OLLAMA_MODEL}` trên máy — hệ thống vẫn sẽ thử chạy, có thể lỗi.")
+                        try:
+                            with st.status("Hệ thống đang thực thi luồng AI (Pipeline)...", expanded=True) as status:
+                                st.write("[Bước 1/4] Thu thập dữ liệu (Online + File tải lên / DATA/)...")
+                                raw_df = collect_all(
+                                    uploaded_records=st.session_state.get("uploaded_records"),
+                                    enable_online_scrape=use_online,
+                                )
+
+                                if raw_df.empty:
+                                    status.update(label="Không có dữ liệu nào để phân tích!", state="error")
+                                    st.error("Không thu thập được dữ liệu nào (cả online lẫn file). "
+                                            "Hãy tải file khách hàng lên ở sidebar hoặc bật cào online.")
+                                    st.stop()
+
+                                st.write("[Bước 2/4] Phân cụm tâm lý khách hàng bằng K-Means...")
+                                n_clusters_eff = max(1, min(NUM_CLUSTERS, len(raw_df)))
+                                cluster_result = cluster_customer_psychology(raw_df, n_clusters=n_clusters_eff)
+
+                                st.write("[Bước 3/4] Sinh Persona ảo & chạy mô phỏng Asyncio đa luồng...")
+                                personas = build_personas_with_fallback(cluster_result, n_persona)
+
+                                progress_bar = st.progress(0)
+                                progress_text = st.empty()
+                                def _update_progress(done, total):
+                                    pct = int(done / total * 100) if total else 0
+                                    progress_bar.progress(pct)
+                                    progress_text.info(f"Đang mô phỏng {done}/{total} khách hàng ảo ({pct}%)")
+
+                                results, analysis, fail_count = run_simulation_with_progress(
+                                    personas, scenario_input, progress_callback=_update_progress
+                                )
+                                progress_text.success("Mô phỏng đã hoàn tất.")
+
+                                if not results:
+                                    status.update(label="AI không phản hồi được lượt mô phỏng nào!", state="error")
+                                    st.error("Không nhận được phản hồi hợp lệ nào từ AI. Kiểm tra lại Ollama rồi thử lại.")
+                                    st.stop()
+
+                                st.write("[Bước 4/4] Lưu kết quả vào SQLite Database...")
+                                sid = save_simulation(scenario_input, results, analysis)
+
+                                status.update(label="Hoàn tất mô phỏng! Xem báo cáo bên dưới.", state="complete", expanded=False)
+
+                            if fail_count > 0:
+                                st.warning(f"Có {fail_count}/{len(personas)} khách hàng ảo bị lỗi kết nối trong lúc mô phỏng "
+                                        f"(đã tự động bỏ qua, không tính vào kết quả).")
+                            st.toast("Đã lưu kết quả thành công vào Database!", icon="💾")
+                            st.session_state["selected_scenario_id"] = sid
+
+                        except Exception as e:
+                            st.error(f"Đã có lỗi ngoài dự kiến trong quá trình mô phỏng: {e}")
+
+        st.write("")
+
+        # --- XEM BÁO CÁO: chiến dịch vừa chạy hoặc bất kỳ chiến dịch nào trong lịch sử ---
+        scenarios = get_all_scenarios() if os.path.exists(DB_PATH) else []
+        if scenarios:
+            options = {
+                f"#{sid} - {txt[:60]}{'...' if len(txt) > 60 else ''} ({stars}⭐)": sid
+                for sid, txt, stars in scenarios
+            }
+            label_list = list(options.keys())
+            default_sid = st.session_state.get("selected_scenario_id", scenarios[0][0])
+            default_label = next((k for k, v in options.items() if v == default_sid), label_list[0])
+
+            section_title("Báo cáo chiến dịch")
+            chosen_label = st.selectbox("Xem lại báo cáo chiến dịch:", label_list, index=label_list.index(default_label))
+            sid = options[chosen_label]
+            st.session_state["selected_scenario_id"] = sid
+
+            row = get_scenario_by_id(sid)
+            if row:
+                _, text, s, w, summ, stars = row
+                df_res_all = get_results_by_scenario(sid)
+
+                # --- HÀNG CHỈ SỐ NHANH ---
+                with st.container(border=True):
+                    total_n = len(df_res_all)
+                    pos_n = int((df_res_all["sentiment"] == "positive").sum()) if total_n else 0
+                    neg_n = int((df_res_all["sentiment"] == "negative").sum()) if total_n else 0
+                    neu_n = int((df_res_all["sentiment"] == "neutral").sum()) if total_n else 0
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Đánh giá", f"{stars} / 5")
+                    m2.metric("Tích cực", f"{pos_n}/{total_n}" if total_n else "0")
+                    m3.metric("Tiêu cực", f"{neg_n}/{total_n}" if total_n else "0")
+                    m4.metric("Trung lập", f"{neu_n}/{total_n}" if total_n else "0")
+                    st.info(f"**Tóm tắt chiến lược:** {summ}")
+
+                st.write("")
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    section_title("Phân tích SWOT")
+                    with st.container(border=True):
+                        st.markdown(
+                            f'<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:{PAL["positive"]};margin-right:7px;"></span>'
+                            f'**Điểm mạnh (Strengths)**',
+                            unsafe_allow_html=True,
+                        )
+                        st.write(s)
+                    with st.container(border=True):
+                        st.markdown(
+                            f'<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:{PAL["negative"]};margin-right:7px;"></span>'
+                            f'**Điểm yếu (Weaknesses)**',
+                            unsafe_allow_html=True,
+                        )
+                        st.write(w)
+                with col2:
+                    section_title("Tỉ lệ quyết định mua hàng")
+                    with st.container(border=True):
+                        if not df_res_all.empty:
+                            n_total = len(df_res_all)
+                            n_pos = int((df_res_all["sentiment"] == "positive").sum())
+                            n_neu = int((df_res_all["sentiment"] == "neutral").sum())
+                            n_neg = n_total - n_pos - n_neu
+                            pct_pos = round(100 * n_pos / n_total) if n_total else 0
+                            pct_neu = round(100 * n_neu / n_total) if n_total else 0
+                            pct_neg = max(0, 100 - pct_pos - pct_neu) if n_total else 0
+
+                            # Thanh ngang phân đoạn (segmented bar) thay cho biểu đồ tròn
+                            # trước đây — dễ so sánh tỉ lệ và đồng bộ với bảng màu Corporate.
+                            st.markdown(
+                                f'''
+                                <div style="display:flex;height:34px;border-radius:8px;overflow:hidden;margin-bottom:10px;">
+                                    <div style="width:{pct_pos}%;background:{PAL["positive"]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12.5px;">{pct_pos}%</div>
+                                    <div style="width:{pct_neu}%;background:{PAL["neutral"]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12.5px;">{pct_neu}%</div>
+                                    <div style="width:{pct_neg}%;background:{PAL["negative"]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12.5px;">{pct_neg}%</div>
+                                </div>
+                                <div style="display:flex;gap:16px;font-size:12px;color:{PAL["muted"]};">
+                                    <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:{PAL["positive"]};margin-right:5px;"></span>Sẽ mua ({n_pos})</span>
+                                    <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:{PAL["neutral"]};margin-right:5px;"></span>Lưỡng lự ({n_neu})</span>
+                                    <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:{PAL["negative"]};margin-right:5px;"></span>Không mua ({n_neg})</span>
+                                </div>
+                                ''',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.info("Chưa có dữ liệu phản hồi chi tiết cho chiến dịch này.")
+
+                st.write("")
+                section_title("Feed phản hồi từ khách hàng ảo")
+                with st.container(border=True):
+                    df_details = df_res_all.rename(columns={
+                        "persona_name": "Khách Hàng", "score": "Điểm",
+                        "sentiment": "Thái Độ", "reasoning": "Lý Do Tâm Lý"
+                    })
+                    if not df_details.empty:
+                        st.dataframe(style_sentiment_column(df_details, "Thái Độ"), use_container_width=True)
+                    else:
+                        st.caption("Chưa có phản hồi nào.")
+        else:
+            st.info("Chưa có chiến dịch nào được chạy. Hãy nhập kịch bản và bấm nút phía trên.")
 
 # ==============================================================================
 # TAB 2: DỮ LIỆU NGỮ NGHĨA & PHÂN CỤM K-MEANS
 # ==============================================================================
-with tab_data:
+if nav_choice == "🗂️ Dữ liệu & phân cụm":
     section_title("Dữ liệu ngữ nghĩa & phân cụm K-Means")
 
     col_a, col_b = st.columns([1, 1])
@@ -1109,7 +1466,7 @@ with tab_data:
 # ==============================================================================
 # TAB 3: TRÒ CHUYỆN 1-1 — CHỌN NHẬP VAI 1 KHÁCH HÀNG CỤ THỂ, HOẶC CHAT CHUNG
 # ==============================================================================
-with tab_chat:
+if nav_choice == "💬 Trò chuyện 1-1":
     section_title("Trò chuyện với khách hàng ảo")
 
     chat_mode = st.radio(
@@ -1217,7 +1574,7 @@ with tab_chat:
 # TAB 4: LỊCH SỬ HỌC AI — theo dõi AI đã học được gì, đến đâu, qua từng lần
 # doanh nghiệp tải dữ liệu lên, không chỉ trong phiên làm việc hiện tại.
 # ==============================================================================
-with tab_audit:
+if nav_choice == "📈 Lịch sử học AI":
     section_title("Lịch sử học dữ liệu của AI")
     st.caption("Mỗi lần bạn tải file khách hàng mới lên và xác nhận mapping, hệ thống ghi lại 1 bản audit ở đây.")
 
