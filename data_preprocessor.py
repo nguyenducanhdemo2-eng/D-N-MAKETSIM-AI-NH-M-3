@@ -63,13 +63,23 @@ class AdvancedETLPipeline:
                     self.mapped_df[col] = self.mapped_df[col].clip(12, 100)
                 elif col == "total_spending":
                     self.mapped_df[col] = self.mapped_df[col].clip(lower=0.0)
-            elif schema["type"] in ["string", "category"]:
-                self.mapped_df[col] = self.mapped_df[col].apply(self._clean_text)
+            elif schema["type"] in ["string", "category", "date"]:
+                # QUAN TRỌNG: 1 cột thiếu mapping được tạo bằng `= np.nan` ở trên sẽ bị
+                # pandas suy ra dtype float64 (vì np.nan là số thực). Nếu không ép về
+                # object NGAY tại đây, bước AI suy luận / điền giá trị mặc định phía sau
+                # ghi chuỗi (vd "Sinh viên") vào cột đó sẽ bị pandas từ chối với lỗi
+                # "Invalid value ... for dtype 'float64'".
+                self.mapped_df[col] = self.mapped_df[col].astype("object")
+                self.mapped_df[col] = self.mapped_df[col].apply(self._clean_text).astype("object")
 
         if self.mapped_df['total_spending'].isna().any():
-            self.mapped_df['total_spending'].fillna(self.mapped_df['total_spending'].median() or 0.0, inplace=True)
+            median_spending = self.mapped_df['total_spending'].median()
+            # LƯU Ý: `NaN or 0.0` trả về NaN (NaN được Python coi là truthy), không phải
+            # 0.0 -- nên khi TOÀN BỘ giá trị đều thiếu, phải kiểm tra pd.notna() tường minh.
+            fallback_spending = median_spending if pd.notna(median_spending) else 0.0
+            self.mapped_df.fillna({'total_spending': fallback_spending}, inplace=True)
         if self.mapped_df['gender'].isna().any():
-            self.mapped_df['gender'].fillna("Chưa rõ", inplace=True)
+            self.mapped_df.fillna({'gender': "Chưa rõ"}, inplace=True)
 
         # Chốt trạng thái "original" NGAY SAU khi map + dọn dẹp, TRƯỚC khi AI
         # hoặc default-fallback đụng vào -- đây là mốc để so sánh về sau.
@@ -103,7 +113,7 @@ class AdvancedETLPipeline:
         """Gọi Ollama nội suy các dòng thiếu dữ liệu quan trọng. Mỗi ô được AI
         điền đều được đánh dấu 'ai_inferred' trong self.source_flags."""
         if 'interest_keywords' not in self.mapped_df.columns:
-            self.mapped_df['interest_keywords'] = np.nan
+            self.mapped_df['interest_keywords'] = pd.Series([np.nan] * len(self.mapped_df), dtype="object")
 
         missing_mask = (
             self.mapped_df['age'].isna() | self.mapped_df['job'].isna() |
@@ -125,8 +135,9 @@ class AdvancedETLPipeline:
         # Những ô còn rỗng (vượt limit_ai_calls, hoặc Ollama không trả field đó)
         # được điền bằng giá trị mặc định chung -- đánh dấu riêng 'default_fallback'
         # vì đây KHÔNG phải AI hiểu khách hàng, chỉ là placeholder an toàn.
+        median_age = self.mapped_df['age'].median()
         defaults = {
-            "age": self.mapped_df['age'].median() or 25,
+            "age": median_age if pd.notna(median_age) else 25,
             "job": "Khách hàng tự do",
             "pain_point": "Quan tâm đến chất lượng và giá cả",
             "personality": "Thận trọng",
