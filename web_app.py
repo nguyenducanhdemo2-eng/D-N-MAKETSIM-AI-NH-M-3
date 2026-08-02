@@ -641,8 +641,9 @@ def render_ai_learning_center(report: dict):
 
         if report.get("mapping_error"):
             st.error(
-                f"⚠ AI (Ollama) không thể tự động map schema: {report['mapping_error']}\n\n"
-                f"Bạn vẫn có thể chỉnh sửa mapping thủ công ở bảng bên dưới rồi bấm Xác nhận."
+                f"⚠ AI (Ollama) không map được {report['missing_columns']} cột sau: {report['mapping_error']}\n\n"
+                f"Các cột khác (đã khớp tự động bằng luật/AI) vẫn giữ nguyên kết quả -- chỉ những cột lỗi ở trên "
+                f"cần bạn tự chọn thủ công ở bảng bên dưới rồi bấm Xác nhận."
             )
         if report.get("missing_required_fields"):
             st.warning(
