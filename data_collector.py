@@ -10,6 +10,7 @@
 import os
 import re
 import time
+import json
 import requests
 import pandas as pd
 import random
@@ -465,14 +466,27 @@ def process_customer_rows(df: pd.DataFrame, source_label: str = "real_customer")
     hay từ file upload trên web) và chuẩn hoá thành list record cho pipeline.
     """
     records = []
+    _NOT_FOUND = object()  # sentinel: phân biệt "không tìm thấy cột nào khớp" với "tìm thấy nhưng giá trị rỗng"
     for _, row in df.iterrows():
         row_dict = row.to_dict()
-        interest_value = _get_first_value(row_dict, ["tu_khoa_so_thich", "so_thich", "interests", "interest", "preferences", "mo_ta"], "")
-        job_value = _get_first_value(row_dict, ["nghe_nghiep", "job", "profession", "nghe_nghiep_kh", "nghe"], "Khách hàng")
-        pain_value = _get_first_value(row_dict, ["noi_dau_khach_hang", "pain_point", "pain", "van_de", "problem", "mo_ta_van_de"], "Sợ mua phải sản phẩm không tốt")
-        trait_value = _get_first_value(row_dict, ["tinh_cach", "personality", "character", "dac_diem"], "Thận trọng")
+        interest_raw = _get_first_value(row_dict, ["tu_khoa_so_thich", "so_thich", "interests", "interest", "preferences", "mo_ta"], _NOT_FOUND)
+        job_raw = _get_first_value(row_dict, ["nghe_nghiep", "job", "profession", "nghe_nghiep_kh", "nghe"], _NOT_FOUND)
+        pain_raw = _get_first_value(row_dict, ["noi_dau_khach_hang", "pain_point", "pain", "van_de", "problem", "mo_ta_van_de"], _NOT_FOUND)
+        trait_raw = _get_first_value(row_dict, ["tinh_cach", "personality", "character", "dac_diem"], _NOT_FOUND)
 
-        if interest_value or job_value or pain_value or trait_value:
+        # BUG CŨ: dùng default không rỗng ("Khách hàng", "Thận trọng"...) khiến điều kiện
+        # "đã tìm thấy cột phù hợp" LUÔN đúng, nên nhánh _aggregate_generic_row_text()
+        # (dùng để phân biệt từng dòng khi tên cột lạ) không bao giờ được gọi tới -- mọi
+        # dòng không khớp alias tiếng Việt đều ra CÙNG 1 đoạn text -> bước lọc trùng lặp
+        # phía dưới coi 10.000 khách hàng khác nhau là "trùng nhau" và chỉ giữ lại 1 dòng.
+        found_known_column = any(v is not _NOT_FOUND and str(v).strip() for v in (interest_raw, job_raw, pain_raw, trait_raw))
+
+        interest_value = "" if interest_raw is _NOT_FOUND else interest_raw
+        job_value = "Khách hàng" if job_raw is _NOT_FOUND else job_raw
+        pain_value = "Sợ mua phải sản phẩm không tốt" if pain_raw is _NOT_FOUND else pain_raw
+        trait_value = "Thận trọng" if trait_raw is _NOT_FOUND else trait_raw
+
+        if found_known_column:
             desc_text = f"{interest_value} {job_value} {pain_value} {trait_value}"
         else:
             desc_text = _aggregate_generic_row_text(row)
@@ -518,7 +532,10 @@ def load_customer_file_from_path(file_path: str, source_label: str = "local_cust
 
 
 def preprocess_customer_records(records: list) -> list:
-    """Loại bỏ bản ghi trùng lặp và chuẩn hoá text trước khi vào pipeline AI."""
+    """Loại bỏ bản ghi trùng lặp và chuẩn hoá text trước khi vào pipeline AI.
+    Khóa so trùng gồm cả hash dữ liệu gốc (raw_fields), không chỉ text/job/pain
+    đã suy luận -- để 2 khách hàng thật khác nhau không bao giờ bị gộp nhầm chỉ vì
+    mô tả suy luận ra giống nhau (ví dụ khi file không khớp alias cột đã biết)."""
     unique_records = []
     seen = set()
     for record in records:
@@ -526,10 +543,14 @@ def preprocess_customer_records(records: list) -> list:
         if not text:
             continue
 
+        raw_fields = record.get("raw_fields", {}) or {}
+        raw_signature = json.dumps(raw_fields, sort_keys=True, ensure_ascii=False, default=str)
+
         key = (
             text.strip().lower(),
             str(record.get("real_job", "")).strip().lower(),
             str(record.get("real_pain", "")).strip().lower(),
+            raw_signature,
         )
         if key in seen:
             continue
