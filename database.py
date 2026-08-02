@@ -94,11 +94,26 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    conn.commit()
-    conn.close()
-
-
-def save_canonical_customers(upload_id: int, records: list):
+    # ------------------------------------------------------------------------
+    # NHẬT KÝ HỌC AI (AI LEARNING AUDIT) — mỗi lần chuẩn hóa 1 file, lưu lại
+    # % dữ liệu THẬT so với AI tự suy luận cho từng trường bắt buộc, để người
+    # vận hành theo dõi & xác nhận chất lượng trước khi tin dùng cho mô phỏng.
+    # ------------------------------------------------------------------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS learning_audit (
+            id INTEGER PRIMARY KEY,
+            upload_id INTEGER,
+            upload_name TEXT,
+            total_records INTEGER,
+            overall_real_data_pct REAL,
+            field_coverage_json TEXT,
+            mapping_json TEXT,
+            missing_required_json TEXT,
+            confirmed INTEGER DEFAULT 0,
+            confirmed_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     """Lưu danh sách khách hàng ĐÃ CHUẨN HÓA (sau schema_mapper.apply_mapping()
     + data_preprocessor bù dữ liệu thiếu) vào bảng canonical_customers.
     Đây là bước bắt buộc: nếu bỏ qua bước này, dữ liệu chuẩn hóa sẽ không
@@ -159,7 +174,96 @@ def load_canonical_customers(upload_id: int = None, limit: int = 5000) -> list:
     return rows
 
 
-def reset_db():
+def save_learning_audit(upload_id: int, upload_name: str, audit_summary: dict, mapping: list, missing_required: list) -> int:
+    """Lưu 1 bản ghi 'AI đã học được gì' cho 1 lần upload -- để người vận hành
+    xem lại và xác nhận. Trả về id của bản ghi audit vừa lưu."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO learning_audit
+           (upload_id, upload_name, total_records, overall_real_data_pct,
+            field_coverage_json, mapping_json, missing_required_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            upload_id,
+            upload_name,
+            audit_summary.get("total_records", 0),
+            audit_summary.get("overall_real_data_pct", 0.0),
+            json.dumps(audit_summary.get("field_coverage", {}), ensure_ascii=False),
+            json.dumps(mapping or [], ensure_ascii=False),
+            json.dumps(missing_required or [], ensure_ascii=False),
+        ),
+    )
+    audit_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return audit_id
+
+
+def _row_to_audit_dict(row) -> dict:
+    (audit_id, upload_id, upload_name, total_records, overall_real_data_pct,
+     field_coverage_json, mapping_json, missing_required_json, confirmed, confirmed_at, created_at) = row
+    return {
+        "id": audit_id,
+        "upload_id": upload_id,
+        "upload_name": upload_name,
+        "total_records": total_records,
+        "overall_real_data_pct": overall_real_data_pct,
+        "field_coverage": json.loads(field_coverage_json) if field_coverage_json else {},
+        "mapping": json.loads(mapping_json) if mapping_json else [],
+        "missing_required_fields": json.loads(missing_required_json) if missing_required_json else [],
+        "confirmed": bool(confirmed),
+        "confirmed_at": confirmed_at,
+        "created_at": created_at,
+    }
+
+
+def get_learning_audit_by_upload(upload_id: int) -> dict:
+    """Lấy audit MỚI NHẤT của 1 lần upload cụ thể, hoặc None nếu chưa có."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, upload_id, upload_name, total_records, overall_real_data_pct, "
+        "field_coverage_json, mapping_json, missing_required_json, confirmed, confirmed_at, created_at "
+        "FROM learning_audit WHERE upload_id=? ORDER BY id DESC LIMIT 1",
+        (upload_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return _row_to_audit_dict(row) if row else None
+
+
+def get_all_learning_audits(limit: int = 50) -> list:
+    """Lấy lịch sử toàn bộ các lần AI học dữ liệu, mới nhất trước -- để người
+    vận hành theo dõi tiến trình học qua nhiều lần doanh nghiệp tải dữ liệu."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, upload_id, upload_name, total_records, overall_real_data_pct, "
+        "field_coverage_json, mapping_json, missing_required_json, confirmed, confirmed_at, created_at "
+        "FROM learning_audit ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [_row_to_audit_dict(row) for row in rows]
+
+
+def confirm_learning_audit(audit_id: int):
+    """Người vận hành xác nhận đã xem & chấp nhận chất lượng dữ liệu AI học được
+    cho 1 lần upload cụ thể."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE learning_audit SET confirmed=1, confirmed_at=datetime('now') WHERE id=?",
+        (audit_id,),
+    )
+    conn.commit()
+    conn.close()
     """Xoá TOÀN BỘ lịch sử. Chỉ nên gọi khi người dùng chủ động bấm nút xoá trên UI."""
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
