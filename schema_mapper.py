@@ -1,29 +1,29 @@
 # ==============================================================================
-# SCHEMA_MAPPER.PY - NGUỒN CHUẨN DUY NHẤT (SINGLE SOURCE OF TRUTH) CHO SCHEMA
+# SCHEMA_MAPPER.PY - NGUON CHUAN DUY NHAT (SINGLE SOURCE OF TRUTH) CHO SCHEMA
 # ==============================================================================
-# Trước đây dự án có 3 bộ "hiểu schema" độc lập và không liên thông:
-#   1. data_collector._infer_canonical_column()  (rule-based, alias riêng)
-#   2. data_collector.process_customer_rows()    (alias riêng khác, dùng thật
-#      cho clustering/persona -> đây là chỗ dữ liệu THỰC SỰ chảy vào AI)
-#   3. data_preprocessor.MASTER_SCHEMA           (dùng cho ETL, nhưng kết quả
-#      "clean_customer_data" không được bất kỳ module nào đọc lại -> dead code)
-#
-# File này thay thế cả 3: MỘT schema, MỘT hàm mapping (AI/Ollama), và mapping
-# này bắt buộc phải được lưu vào bảng canonical_customers (database.py) rồi
-# mọi module khác (clustering, persona, chat) CHỈ đọc từ bảng đó.
+# Thiet ke 2 lop, on dinh hon nhieu so voi ban dau (1 lan goi Ollama cho ca
+# 12+ cot -> model 7B local rat de tra JSON hong):
+#   Lop 1 (RULE-BASED, nhanh, khong can AI): tu khop cot co ten ro rang/gan
+#     giong alias da biet (vd "nghe_nghiep", "tuoi", "job"...). Chinh xac
+#     100% cho cot dat ten chuan, khong ton chi phi goi Ollama.
+#   Lop 2 (AI, tung cot mot): CHI goi Ollama cho nhung cot con lai (ten la,
+#     mo ho). Moi cot 1 lan goi rieng, JSON tra ve don gian (1 object, khong
+#     phai mang) -> it loi hon rat nhieu so voi bat AI tra ca mang 12 object
+#     cung luc. Loi o cot nao chi lam cot do "unmapped" kem ly do, KHONG lam
+#     hong toan bo cac cot khac da map duoc (rule hoac AI) -- dung tinh than
+#     "khong am tham doan mo" da thong nhat: loi van duoc bao ro theo tung cot.
 # ==============================================================================
 
 import json
+import re
+import unicodedata
 import requests
 from config import OLLAMA_HOST, OLLAMA_MODEL, REQUEST_TIMEOUT_SEC
 
 
 # ------------------------------------------------------------------------------
-# CANONICAL SCHEMA — nguồn chuẩn duy nhất, mọi nơi khác import từ đây
+# CANONICAL SCHEMA - nguon chuan duy nhat, moi noi khac import tu day
 # ------------------------------------------------------------------------------
-# required=True nghĩa là: nếu doanh nghiệp không có cột này, AI phải tự suy luận
-# (Ollama contextual imputation ở data_preprocessor.py), vì persona_simulator.py
-# bắt buộc cần giá trị này để xây prompt nhập vai.
 CANONICAL_SCHEMA = {
     "customer_id":        {"type": "string",  "required": False},
     "age":                {"type": "numeric", "required": True},
@@ -39,13 +39,75 @@ CANONICAL_SCHEMA = {
 
 REQUIRED_FIELDS = [k for k, v in CANONICAL_SCHEMA.items() if v["required"]]
 
+# ------------------------------------------------------------------------------
+# LOP 1: RULE-BASED ALIAS TABLE
+# ------------------------------------------------------------------------------
+# Danh sach alias cho tung truong chuan, khong dau, chu thuong, _ thay khoang trang.
+# Khop CHINH XAC ten cot (sau khi chuan hoa) -> confidence 0.97
+# Khop MOT PHAN (alias nam trong ten cot hoac nguoc lai) -> confidence 0.8
+CANONICAL_ALIASES = {
+    "customer_id": ["customer_id", "ma_khach_hang", "id_khach_hang", "ma_kh", "customer id", "id"],
+    "age": ["age", "tuoi", "do_tuoi", "tuoi_khach_hang", "nam_sinh"],
+    "gender": ["gender", "gioi_tinh", "sex"],
+    "job": ["job", "nghe_nghiep", "profession", "cong_viec", "nghe", "chuc_vu", "chuc_danh"],
+    "location": ["location", "dia_chi", "khu_vuc", "tinh_thanh", "address", "city", "region", "noi_o", "thanh_pho"],
+    "total_spending": ["total_spending", "tong_chi_tieu", "doanh_thu", "chi_tieu", "spending", "revenue", "gia_tri_don_hang", "tong_tien"],
+    "pain_point": ["pain_point", "noi_dau", "noi_dau_khach_hang", "van_de", "problem", "kho_khan", "ghi_chu_van_de"],
+    "personality": ["personality", "tinh_cach", "character", "dac_diem", "tinh_cach_khach_hang"],
+    "interest_keywords": ["interest", "so_thich", "tu_khoa_so_thich", "interests", "preferences", "mo_ta", "sthich", "hanh_vi"],
+    "last_purchase_date": ["last_purchase_date", "ngay_mua_gan_nhat", "ngay_mua", "purchase_date", "ngay_dat_hang"],
+}
+
+RULE_EXACT_CONFIDENCE = 0.97
+RULE_PARTIAL_CONFIDENCE = 0.80
+RULE_MATCH_THRESHOLD = 0.75  # >= nguong nay thi CHAP NHAN LUON, khong goi AI nua
+
+
+def _normalize_column_name(name: str) -> str:
+    """Bo dau tieng Viet, chu thuong, thay khoang trang/ky tu dac biet bang '_'."""
+    text = str(name or "").strip().lower()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = text.replace("đ", "d").replace("Đ", "d")
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return text
+
+
+def _rule_based_match(column_name: str):
+    """Tra ve (canonical_field, confidence, reasoning) hoac (None, 0.0, '') neu khong khop."""
+    norm_col = _normalize_column_name(column_name)
+    if not norm_col:
+        return None, 0.0, ""
+
+    # Uu tien khop CHINH XAC truoc
+    for field, aliases in CANONICAL_ALIASES.items():
+        for alias in aliases:
+            if _normalize_column_name(alias) == norm_col:
+                return field, RULE_EXACT_CONFIDENCE, f"Tên cột khớp chính xác alias '{alias}'"
+
+    # Roi moi den khop MOT PHAN (alias nam trong ten cot hoac nguoc lai)
+    best_field, best_alias, best_len = None, None, 0
+    for field, aliases in CANONICAL_ALIASES.items():
+        for alias in aliases:
+            norm_alias = _normalize_column_name(alias)
+            if len(norm_alias) < 3:
+                continue  # tranh khop nham voi alias qua ngan nhu "id", "job"
+            if norm_alias in norm_col or norm_col in norm_alias:
+                if len(norm_alias) > best_len:
+                    best_field, best_alias, best_len = field, alias, len(norm_alias)
+
+    if best_field:
+        return best_field, RULE_PARTIAL_CONFIDENCE, f"Tên cột chứa/gần giống alias '{best_alias}'"
+    return None, 0.0, ""
+
 
 class SchemaMappingError(Exception):
-    """Ném ra khi Ollama không map được cột (mất kết nối, timeout, JSON hỏng).
-    Theo yêu cầu: KHÔNG fallback ngầm về rule-based — phải báo lỗi rõ ràng để
-    người dùng tự map tay qua UI (st.data_editor), tránh việc AI "đoán bừa"
-    một mapping sai mà người dùng không biết để sửa."""
-    pass
+    """Dung noi bo trong module nay khi 1 loi goi Ollama xay ra cho 1 cot cu the.
+    fatal=True nghia la loi ket noi/timeout (goi tiep cac cot khac cung se that bai
+    ngay, nen dung lai som thay vi cho tung cot 1 mot cach vo ich)."""
+    def __init__(self, message, fatal=False):
+        super().__init__(message)
+        self.fatal = fatal
 
 
 def _sample_values(raw_fields_list: list, column: str, n: int = 5) -> list:
@@ -59,42 +121,31 @@ def _sample_values(raw_fields_list: list, column: str, n: int = 5) -> list:
     return values
 
 
-def map_columns_with_ai(columns: list, raw_fields_list: list) -> list:
-    """
-    Gửi tên cột + vài giá trị mẫu thực tế cho Ollama, để nó tự suy luận cột
-    nào tương ứng với trường nào trong CANONICAL_SCHEMA. Dùng giá trị mẫu là
-    bắt buộc vì tên cột doanh nghiệp đặt tùy tiện (vd "col_5", "field_a")
-    nhưng giá trị mẫu luôn có ý nghĩa để suy luận.
+def _clamp_confidence(value) -> float:
+    try:
+        return round(max(0.0, min(1.0, float(value))), 2)
+    except (TypeError, ValueError):
+        return 0.5
 
-    Trả về list[dict]: [{source_column, canonical_field, confidence, reasoning}]
-    Ném SchemaMappingError nếu Ollama lỗi/timeout/JSON không hợp lệ -- KHÔNG
-    tự ý fallback sang rule-based.
-    """
-    if not columns:
-        return []
 
-    sample_block = "\n".join(
-        f'- "{col}": ví dụ giá trị = {_sample_values(raw_fields_list, col)}'
-        for col in columns
-    )
+def _map_single_column_with_ai(column: str, samples: list) -> dict:
+    """Goi Ollama cho DUY NHAT 1 cot -> JSON OBJECT don gian (khong phai mang),
+    de model 7B cuc it co co hoi tra JSON hong so voi phai tra 1 mang nhieu object."""
     canonical_list = "\n".join(
         f'- {name} ({"BẮT BUỘC" if meta["required"] else "tùy chọn"}, kiểu {meta["type"]})'
         for name, meta in CANONICAL_SCHEMA.items()
     )
+    prompt = f"""Bạn là chuyên gia chuẩn hóa dữ liệu khách hàng.
+Tên cột: "{column}"
+Giá trị mẫu thực tế trong cột này: {samples if samples else "(không có giá trị mẫu)"}
 
-    prompt = f"""Bạn là chuyên gia chuẩn hóa dữ liệu khách hàng (data engineer).
-Dưới đây là các cột trong 1 file dữ liệu khách hàng do doanh nghiệp tải lên, kèm vài giá trị mẫu thực tế:
-
-{sample_block}
-
-Danh sách trường CHUẨN (canonical) cần ánh xạ tới:
+Danh sách trường CHUẨN có thể ánh xạ tới:
 {canonical_list}
 
-Nếu 1 cột không khớp với trường chuẩn nào, gán canonical_field = "unmapped".
-Chỉ trả về JSON duy nhất, không kèm giải thích, đúng định dạng mảng:
-[{{"source_column": "<tên cột gốc>", "canonical_field": "<tên trường chuẩn hoặc unmapped>", "confidence": <0.0-1.0>, "reasoning": "<lý do ngắn gọn>"}}]
+Nếu cột này không khớp trường chuẩn nào, trả canonical_field = "unmapped".
+Chỉ trả về DUY NHẤT 1 JSON OBJECT (không phải mảng, không giải thích thêm), đúng định dạng:
+{{"canonical_field": "<tên trường chuẩn hoặc unmapped>", "confidence": <0.0-1.0>, "reasoning": "<lý do ngắn gọn>"}}
 """
-
     try:
         resp = requests.post(
             f"{OLLAMA_HOST}/api/generate",
@@ -105,55 +156,106 @@ Chỉ trả về JSON duy nhất, không kèm giải thích, đúng định dạ
         raw_text = resp.json().get("response", "")
     except requests.exceptions.ConnectionError:
         raise SchemaMappingError(
-            f"Không kết nối được tới Ollama tại {OLLAMA_HOST}. Hãy chạy 'ollama serve' rồi thử lại, "
-            f"hoặc bấm 'Tự map tay' để chỉnh sửa mapping thủ công."
+            f"Không kết nối được tới Ollama tại {OLLAMA_HOST}. Hãy chạy 'ollama serve' rồi thử lại.",
+            fatal=True,
         )
     except requests.exceptions.Timeout:
-        raise SchemaMappingError(
-            "Ollama phản hồi quá lâu khi phân tích schema. Hãy thử lại, hoặc map tay."
-        )
+        raise SchemaMappingError("Ollama phản hồi quá lâu.", fatal=True)
     except Exception as e:
-        raise SchemaMappingError(f"Lỗi hệ thống khi gọi Ollama để map schema: {e}")
+        raise SchemaMappingError(f"Lỗi hệ thống khi gọi Ollama: {e}", fatal=True)
 
     try:
         clean = raw_text.strip()
-        start, end = clean.find("["), clean.rfind("]")
+        start, end = clean.find("{"), clean.rfind("}")
         if start == -1 or end == -1:
-            raise ValueError("Không tìm thấy mảng JSON trong phản hồi.")
-        mapping = json.loads(clean[start:end + 1])
+            raise ValueError("Không tìm thấy JSON object trong phản hồi.")
+        return json.loads(clean[start:end + 1])
     except Exception as e:
-        raise SchemaMappingError(
-            f"Ollama trả về JSON không hợp lệ khi map schema ({e}). Hãy thử lại, hoặc map tay."
-        )
+        raise SchemaMappingError(f"Ollama trả về JSON không hợp lệ cho cột '{column}': {e}", fatal=False)
 
-    # Chuẩn hoá + validate kết quả, đảm bảo mọi cột gốc đều có mặt
-    mapped_by_source = {item.get("source_column"): item for item in mapping if isinstance(item, dict)}
-    result = []
+
+def _unmapped_row(column: str, reasoning: str, source: str) -> dict:
+    return {
+        "source_column": column,
+        "canonical_field": "unmapped",
+        "confidence": 0.0,
+        "confidence_display": "0%",
+        "reasoning": reasoning,
+        "source": source,
+    }
+
+
+def map_columns_with_ai(columns: list, raw_fields_list: list) -> list:
+    """
+    Lop 1: khop rule-based ngay cho cot ten ro rang (khong can Ollama).
+    Lop 2: CHI goi Ollama cho cot con lai, TUNG COT MOT (khong phai ca mang
+    cung luc) -- de giam toi da rui ro Ollama tra JSON hong. Loi o 1 cot
+    khong lam hong ket qua cua cac cot khac; neu Ollama mat ket noi hoan
+    toan, dung lai ngay (khong thu tung cot con lai mot cach vo ich) va bao
+    ro cho nguoi dung.
+    """
+    if not columns:
+        return []
+
+    result_by_col = {}
+    unresolved = []
     for col in columns:
-        item = mapped_by_source.get(col, {})
-        canonical_field = item.get("canonical_field", "unmapped")
-        if canonical_field not in CANONICAL_SCHEMA:
-            canonical_field = "unmapped"
-        confidence = item.get("confidence", 0.5)
-        try:
-            confidence = max(0.0, min(1.0, float(confidence)))
-        except (TypeError, ValueError):
-            confidence = 0.5
-        result.append({
-            "source_column": col,
-            "canonical_field": canonical_field,
-            "confidence": round(confidence, 2),
-            "confidence_display": f"{int(confidence * 100)}%",
-            "reasoning": item.get("reasoning", ""),
-            "editable": True,
-        })
-    return result
+        field, confidence, reasoning = _rule_based_match(col)
+        if field and confidence >= RULE_MATCH_THRESHOLD:
+            result_by_col[col] = {
+                "source_column": col,
+                "canonical_field": field,
+                "confidence": confidence,
+                "confidence_display": f"{int(confidence * 100)}%",
+                "reasoning": reasoning,
+                "source": "rule",
+            }
+        else:
+            unresolved.append(col)
+
+    ollama_down = False
+    for col in unresolved:
+        if ollama_down:
+            result_by_col[col] = _unmapped_row(
+                col, "Bỏ qua: Ollama đã mất kết nối ở cột trước đó.", "ai_skipped"
+            )
+            continue
+
+        samples = _sample_values(raw_fields_list, col)
+        mapped, last_error = None, None
+        for _attempt in range(2):  # thử tối đa 2 lần cho lỗi JSON không hợp lệ (không phải lỗi kết nối)
+            try:
+                mapped = _map_single_column_with_ai(col, samples)
+                break
+            except SchemaMappingError as e:
+                last_error = e
+                if e.fatal:
+                    break  # lỗi kết nối/timeout -- thử lại ngay cũng vô ích
+
+        if mapped is None:
+            result_by_col[col] = _unmapped_row(col, str(last_error) if last_error else "Lỗi không xác định", "ai_failed")
+            if last_error is not None and getattr(last_error, "fatal", False):
+                ollama_down = True
+        else:
+            canonical_field = mapped.get("canonical_field", "unmapped")
+            if canonical_field not in CANONICAL_SCHEMA:
+                canonical_field = "unmapped"
+            confidence = _clamp_confidence(mapped.get("confidence", 0.5))
+            result_by_col[col] = {
+                "source_column": col,
+                "canonical_field": canonical_field,
+                "confidence": confidence,
+                "confidence_display": f"{int(confidence * 100)}%",
+                "reasoning": mapped.get("reasoning", ""),
+                "source": "ai",
+            }
+
+    return [result_by_col[c] for c in columns]
 
 
 def apply_mapping(raw_fields_list: list, mapping: list) -> list:
-    """Áp dụng mapping đã xác nhận (có thể đã được người dùng sửa tay trên UI)
-    để đổi tên cột gốc -> tên trường canonical. Không suy luận gì thêm ở đây;
-    việc bù dữ liệu thiếu cho REQUIRED_FIELDS do data_preprocessor.py đảm nhiệm."""
+    """Ap dung mapping da xac nhan (co the da duoc nguoi dung sua tay tren UI)
+    de doi ten cot goc -> ten truong canonical."""
     col_to_canonical = {
         m["source_column"]: m["canonical_field"]
         for m in mapping
@@ -171,7 +273,13 @@ def apply_mapping(raw_fields_list: list, mapping: list) -> list:
 
 
 def missing_required_fields(mapping: list) -> list:
-    """Trả về danh sách trường BẮT BUỘC chưa được map tới cột nào -> UI cảnh báo
-    trước khi cho xác nhận, để không lặp lại lỗi 'im lặng thiếu dữ liệu'."""
+    """Tra ve danh sach truong BAT BUOC chua duoc map toi cot nao."""
     mapped_fields = {m["canonical_field"] for m in mapping}
     return [f for f in REQUIRED_FIELDS if f not in mapped_fields]
+
+
+def failed_columns(mapping: list) -> list:
+    """Danh sach cot ma Ollama KHONG map duoc (loi ket noi/JSON hong), de UI
+    canh bao dung cho nguoi dung tu map tay dung nhung cot do -- khong che lap
+    thanh cong cua cac cot khac."""
+    return [m for m in mapping if m.get("source") in ("ai_failed", "ai_skipped")]
