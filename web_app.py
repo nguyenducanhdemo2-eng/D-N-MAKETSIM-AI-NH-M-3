@@ -523,6 +523,64 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+FIELD_LABELS_VI = {
+    "age": "Tuổi",
+    "job": "Nghề nghiệp",
+    "pain_point": "Nỗi đau khách hàng",
+    "personality": "Tính cách",
+    "interest_keywords": "Từ khóa sở thích",
+}
+
+
+def render_learning_audit_panel(audit_summary: dict, audit_id: int = None, clean_data: list = None):
+    """Hiển thị RÕ RÀNG: với mỗi trường bắt buộc AI dùng để mô phỏng persona,
+    bao nhiêu % là dữ liệu THẬT của doanh nghiệp, bao nhiêu % là AI tự suy luận
+    (ai_inferred) hoặc chỉ là giá trị mặc định an toàn (default_fallback).
+    Đây là câu trả lời trực tiếp cho câu hỏi 'AI học được gì, học đến đâu'."""
+    st.markdown("#### 🔍 AI Learning Audit — AI đã học được gì, đến đâu?")
+
+    overall = audit_summary.get("overall_real_data_pct", 0.0)
+    total = audit_summary.get("total_records", 0)
+    c1, c2 = st.columns(2)
+    c1.metric("Tổng số hồ sơ đã chuẩn hóa", total)
+    c2.metric("Tỉ lệ dữ liệu THẬT (trung bình)", f"{overall}%")
+
+    if overall < 50:
+        st.error(
+            "⚠ Hơn một nửa dữ liệu bắt buộc là do AI TỰ SUY LUẬN hoặc giá trị mặc định, "
+            "không phải dữ liệu thật từ doanh nghiệp. Kết quả mô phỏng có thể KHÔNG phản ánh "
+            "đúng khách hàng thật. Khuyến nghị: kiểm tra lại file gốc có đủ cột cần thiết chưa."
+        )
+    elif overall < 80:
+        st.warning("Một phần đáng kể dữ liệu là do AI suy luận. Nên xem kỹ bảng chi tiết bên dưới trước khi tin dùng.")
+    else:
+        st.success("Phần lớn dữ liệu là thật từ doanh nghiệp. Chất lượng học tốt.")
+
+    field_coverage = audit_summary.get("field_coverage", {})
+    if field_coverage:
+        rows = []
+        for field, stats in field_coverage.items():
+            rows.append({
+                "Trường dữ liệu": FIELD_LABELS_VI.get(field, field),
+                "Dữ liệu thật (%)": stats.get("original_pct", 0.0),
+                "AI tự suy luận (%)": stats.get("ai_inferred_pct", 0.0),
+                "Giá trị mặc định (%)": stats.get("default_fallback_pct", 0.0),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    if clean_data:
+        with st.expander("👀 Xem trước dữ liệu đã chuẩn hóa (Canonical Data)"):
+            st.dataframe(pd.DataFrame(clean_data).drop(columns=["_field_sources"], errors="ignore").head(100),
+                         use_container_width=True)
+
+    if audit_id is not None:
+        if st.button("✅ Tôi đã xem & xác nhận chất lượng dữ liệu học được này", key=f"confirm_audit_{audit_id}"):
+            confirm_fn = getattr(database_module, "confirm_learning_audit", None)
+            if confirm_fn is not None:
+                confirm_fn(audit_id)
+                st.success("Đã ghi nhận xác nhận của bạn cho lần học dữ liệu này.")
+
+
 def render_ai_learning_center(report: dict):
     if not report:
         return
@@ -618,9 +676,13 @@ def render_ai_learning_center(report: dict):
                     st.write("🔄 Đang chuẩn hóa cấu trúc và ép kiểu dữ liệu bằng Pandas...")
                     st.write("🧠 Đang gọi Ollama nội suy các hồ sơ bị khuyết (Contextual Imputation)...")
                     
-                    # Kích hoạt luồng bất đồng bộ để gọi AI nội suy dữ liệu khuyết
-                    clean_data = asyncio.run(run_advanced_etl(raw_data, mapping))
-                    
+                    # Kích hoạt luồng bất đồng bộ để gọi AI nội suy dữ liệu khuyết.
+                    # run_advanced_etl giờ trả về (records, audit_summary): audit_summary
+                    # cho biết % dữ liệu THẬT vs AI tự suy luận cho từng trường.
+                    clean_data, audit_summary = asyncio.run(
+                        run_advanced_etl(raw_data, mapping, upload_name=report.get("file_name", ""))
+                    )
+
                     # Lưu lại tệp dữ liệu đã sạch 100% vào bộ nhớ phiên (để xem trước trên UI)
                     st.session_state["clean_customer_data"] = clean_data
 
@@ -628,17 +690,26 @@ def render_ai_learning_center(report: dict):
                     # BỊ THIẾU, khiến dữ liệu đã chuẩn hóa không bao giờ được clustering/persona
                     # đọc lại. Từ giờ collect_all() sẽ ưu tiên đọc từ đúng bảng này.
                     save_canonical_customers_fn = getattr(database_module, "save_canonical_customers", None)
+                    upload_id = st.session_state.get("current_upload_id")
                     if save_canonical_customers_fn is not None and clean_data:
-                        upload_id = st.session_state.get("current_upload_id")
                         save_canonical_customers_fn(upload_id, clean_data)
                         st.write(f"💾 Đã lưu {len(clean_data)} hồ sơ vào bảng dữ liệu chuẩn (canonical_customers).")
+
+                    # Lưu NHẬT KÝ HỌC AI: để trả lời đúng câu hỏi "AI đã học được gì,
+                    # học đến đâu" -- xem lại được bất cứ lúc nào, không chỉ trong phiên này.
+                    save_learning_audit_fn = getattr(database_module, "save_learning_audit", None)
+                    if save_learning_audit_fn is not None:
+                        audit_id = save_learning_audit_fn(
+                            upload_id, report.get("file_name", ""), audit_summary,
+                            mapping, report.get("missing_required_fields", []),
+                        )
+                        st.session_state["last_audit_id"] = audit_id
 
                     status.update(label=f"Hoàn tất! Chuẩn hóa thành công {len(clean_data)} hồ sơ khách hàng.", state="complete")
                     st.success("Hệ thống đã khóa dữ liệu chuẩn (Canonical Data Model). Sẵn sàng chuyển sang Mô phỏng Synthetic Data.")
                     
-                    with st.expander("👀 Bấm vào đây để xem trước Dữ liệu Đã chuẩn hóa (Master Schema)"):               
-                        st.dataframe(pd.DataFrame(clean_data).head(100), use_container_width=True)
-                        
+                    render_learning_audit_panel(audit_summary, audit_id=st.session_state.get("last_audit_id"), clean_data=clean_data)
+
                 except ModuleNotFoundError:
                     status.update(label="Lỗi cấu trúc thư mục", state="error")
                     st.error("Không tìm thấy module 'data_preprocessor'. Hãy đảm bảo file 'data_preprocessor.py' nằm cùng thư mục với 'web_app.py'.")
@@ -776,10 +847,11 @@ if st.session_state.get("ai_learning_report"):
     render_ai_learning_center(st.session_state["ai_learning_report"])
 
 
-tab_sim, tab_data, tab_chat = st.tabs([
+tab_sim, tab_data, tab_chat, tab_audit = st.tabs([
     "[1] Mô phỏng & SWOT",
     "[2] Dữ liệu & phân cụm",
-    "[3] Trò chuyện 1-1"
+    "[3] Trò chuyện 1-1",
+    "[4] Lịch sử học AI"
 ])
 
 # ==============================================================================
@@ -1121,3 +1193,51 @@ with tab_chat:
                         st.session_state.messages.append({"role": "assistant", "content": response_text})
                     except (ConnectionError, TimeoutError, RuntimeError) as e:
                         st.error(f"{e}")
+
+# ==============================================================================
+# TAB 4: LỊCH SỬ HỌC AI — theo dõi AI đã học được gì, đến đâu, qua từng lần
+# doanh nghiệp tải dữ liệu lên, không chỉ trong phiên làm việc hiện tại.
+# ==============================================================================
+with tab_audit:
+    section_title("Lịch sử học dữ liệu của AI")
+    st.caption("Mỗi lần bạn tải file khách hàng mới lên và xác nhận mapping, hệ thống ghi lại 1 bản audit ở đây.")
+
+    get_all_audits_fn = getattr(database_module, "get_all_learning_audits", None)
+    audits = get_all_audits_fn() if get_all_audits_fn is not None else []
+
+    if not audits:
+        st.info("Chưa có lần học dữ liệu nào được ghi nhận. Hãy tải file khách hàng lên ở sidebar và xác nhận mapping.")
+    else:
+        summary_rows = [{
+            "Thời điểm": a["created_at"],
+            "Tên file": a["upload_name"],
+            "Số hồ sơ": a["total_records"],
+            "Dữ liệu thật (%)": a["overall_real_data_pct"],
+            "Đã xác nhận?": "✅ Đã xác nhận" if a["confirmed"] else "⏳ Chưa xác nhận",
+        } for a in audits]
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("**Xem chi tiết 1 lần học:**")
+        options = {f"#{a['id']} — {a['upload_name']} ({a['created_at']})": a for a in audits}
+        chosen_key = st.selectbox("Chọn lần upload:", list(options.keys()), key="audit_history_select")
+        chosen_audit = options[chosen_key]
+
+        render_learning_audit_panel(
+            {
+                "overall_real_data_pct": chosen_audit["overall_real_data_pct"],
+                "total_records": chosen_audit["total_records"],
+                "field_coverage": chosen_audit["field_coverage"],
+            },
+            audit_id=chosen_audit["id"],
+        )
+
+        if chosen_audit.get("missing_required_fields"):
+            st.warning(f"Lần này còn thiếu trường bắt buộc: {', '.join(chosen_audit['missing_required_fields'])}")
+
+        with st.expander("Xem bảng mapping đã dùng cho lần upload này"):
+            mapping_hist_df = pd.DataFrame(chosen_audit.get("mapping", []))
+            if not mapping_hist_df.empty:
+                st.dataframe(mapping_hist_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Không có dữ liệu mapping lưu lại cho lần này.")
