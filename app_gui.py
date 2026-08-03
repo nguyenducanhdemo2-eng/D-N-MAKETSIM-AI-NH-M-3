@@ -85,7 +85,8 @@ def _run_streamlit_in_background(port: int) -> None:
             f"data_collector.py, data_preprocessor.py, thư mục DATA/...) "
             f"nằm cùng chỗ với desktop_app.py / file .exe đã build."
         )
-
+    import streamlit.web.bootstrap as bootstrap
+    bootstrap._set_up_signal_handler = lambda *args, **kwargs: None
     import streamlit.web.cli as stcli
 
     sys.argv = [
