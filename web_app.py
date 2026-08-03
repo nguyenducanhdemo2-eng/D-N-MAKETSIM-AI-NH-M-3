@@ -105,19 +105,10 @@ st.set_page_config(
 )
 
 # ==============================================================================
-# TRẠNG THÁI CHẾ ĐỘ SÁNG / TỐI
-# Đọc SỚM ở đây (trước khi build CSS) - Streamlit luôn cập nhật session_state
-# TRƯỚC khi chạy lại toàn bộ script, nên giá trị mới nhất luôn có sẵn ở đây,
-# dù ô công tắc (st.toggle) được đặt ở phần sidebar bên dưới.
-# ==============================================================================
-dark_mode = st.session_state.get("dark_mode", False)
-
-# ==============================================================================
 # BẢNG MÀU
+# ĐÃ BỎ công tắc Sáng/Tối theo yêu cầu — toàn bộ giao diện (sidebar + nội dung
+# chính) giờ dùng CỐ ĐỊNH 1 bảng màu Tối (navy), không còn LIGHT nữa.
 # ==============================================================================
-# Sidebar: LUÔN có tông xanh navy tối, mát mắt (không đổi theo dark_mode)
-# ĐÃ ĐỔI accent tím (#8B7CFF) -> accent xanh dương corporate (#2D82B7) để đồng bộ
-# với bảng màu Corporate/Doanh nghiệp mới.
 SIDEBAR = {
     "bg_from": "#0B2545", "bg_to": "#132F58",
     "text": "#EAF0FB", "muted": "#8FA3C7",
@@ -128,19 +119,6 @@ SIDEBAR = {
     "error": "#E2635A", "error_bg": "rgba(226,99,90,0.15)",
 }
 
-# Nội dung chính: đổi theo công tắc dark_mode
-# ĐÃ ĐỔI SANG BẢNG MÀU CORPORATE/DOANH NGHIỆP (xanh navy - xanh dương - trắng)
-# thay cho tông tím-ngọc (#7C4DFF/#00C2A8) trước đây, theo yêu cầu thiết kế lại
-# giao diện chuyên nghiệp hơn cho demo khách hàng B2B.
-LIGHT = {
-    "bg": "#F4F6F9", "card_bg": "#FFFFFF", "text": "#14213D", "muted": "#5B6B85",
-    "border": "#E2E7EF", "accent": "#1B4F91",
-    "positive": "#1F8A5F", "positive_bg": "#E4F5EC",
-    "negative": "#C0392B", "negative_bg": "#FBE9E7",
-    "neutral": "#C9821A", "neutral_bg": "#FBF0DF",
-    "chip_bg": "#E5F1F8", "chip_text": "#1B4F91",
-    "score_track": "#E2E7EF",
-}
 DARK = {
     "bg": "#0B2545", "card_bg": "#132F58", "text": "#EAF0FB", "muted": "#8FA3C7",
     "border": "#22406E", "accent": "#2D82B7",
@@ -150,7 +128,7 @@ DARK = {
     "chip_bg": "rgba(45,130,183,0.20)", "chip_text": "#BEE0F5",
     "score_track": "rgba(255,255,255,0.08)",
 }
-PAL = DARK if dark_mode else LIGHT
+PAL = DARK
 
 # ==============================================================================
 # CSS TUỲ CHỈNH (chỉ ảnh hưởng thẩm mỹ, không đụng logic).
@@ -428,28 +406,32 @@ div.stButton > button:hover, div.stFormSubmitButton > button:hover {{
     font-weight: 600 !important;
 }}
 
-/* Nhãn nhóm điều hướng (TỔNG QUAN / CHIẾN DỊCH / DỮ LIỆU / HỆ THỐNG) chèn
-   bằng ::before trước từng mục tương ứng trong NAV_OPTIONS — CSS thuần,
-   KHÔNG đụng vào logic Python của st.radio (an toàn, không có rủi ro
-   gãy state điều hướng). Thứ tự phải khớp đúng thứ tự NAV_OPTIONS bên dưới:
-   1=Tổng quan, 2=Chiến dịch & SWOT, 3=Dữ liệu & phân cụm, 4=Trò chuyện 1-1,
-   5=Lịch sử học AI. */
+/* Nhãn nhóm điều hướng chèn bằng ::before trước từng mục tương ứng trong
+   NAV_OPTIONS — CSS thuần, KHÔNG đụng vào logic Python của st.radio (an
+   toàn, không có rủi ro gãy state điều hướng). Thứ tự phải khớp đúng thứ tự
+   NAV_OPTIONS bên dưới: 1=Tổng quan, 2=Dữ liệu khách hàng thật,
+   3=Chiến dịch & SWOT, 4=Dữ liệu & phân cụm, 5=Trò chuyện 1-1,
+   6=Lịch sử học AI. */
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(1)::before {{
     content: "TỔNG QUAN";
 }}
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(2)::before {{
-    content: "CHIẾN DỊCH";
+    content: "DỮ LIỆU KHÁCH HÀNG";
 }}
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(3)::before {{
-    content: "DỮ LIỆU";
+    content: "CHIẾN DỊCH";
 }}
-[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(5)::before {{
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(4)::before {{
+    content: "DỮ LIỆU & PHÂN TÍCH";
+}}
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(6)::before {{
     content: "HỆ THỐNG";
 }}
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(1)::before,
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(2)::before,
 [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(3)::before,
-[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(5)::before {{
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(4)::before,
+[data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] > label:nth-of-type(6)::before {{
     display: block;
     font-size: 11px;
     font-weight: 700;
@@ -887,12 +869,11 @@ with st.sidebar:
         st.session_state["user_email"] = None
         st.rerun()
 
-    st.toggle("Chế độ tối cho nội dung chính", key="dark_mode")
-
     st.markdown("---")
     st.markdown('<div class="msai-sidebar-label">Điều hướng</div>', unsafe_allow_html=True)
     NAV_OPTIONS = [
         "🏠 Tổng quan",
+        "📤 Dữ liệu khách hàng thật",
         "🎯 Chiến dịch & SWOT",
         "🗂️ Dữ liệu & phân cụm",
         "💬 Trò chuyện 1-1",
@@ -927,89 +908,10 @@ with st.sidebar:
     else:
         sidebar_status("muted", "Bấm nút trên để kiểm tra trước khi chạy mô phỏng.")
 
-    st.markdown("---")
-    st.markdown('<div class="msai-sidebar-label">Nạp dữ liệu khách hàng thật</div>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader(
-        "Tải file CSV/XLSX khách hàng",
-        type=["csv", "xlsx"],
-        help="Tối đa 1GB. Hỗ trợ schema tùy ý; app sẽ tự động trích xuất thông tin quan trọng để AI mô phỏng hành vi."
-    )
-    if uploaded_file is not None:
-        current_upload_name = getattr(uploaded_file, "name", None)
-        last_upload_name = st.session_state.get("ai_learning_file_name")
-        if current_upload_name and current_upload_name != last_upload_name:
-            try:
-                st.session_state["ai_learning_file_name"] = current_upload_name
-                file_size = getattr(uploaded_file, "size", None)
-                if file_size is not None and file_size > MAX_UPLOAD_BYTES:
-                    raise ValueError("File quá lớn (>1GB). Vui lòng chọn file nhỏ hơn 1GB.")
-
-                with st.spinner("AI đang mở AI Learning Center và học dữ liệu..."):
-                    new_records = load_uploaded_dataframe(uploaded_file)
-                    st.session_state["uploaded_records"] = new_records
-                    column_names = []
-                    if new_records:
-                        first_raw = new_records[0].get("raw_fields", {})
-                        column_names = sorted(first_raw.keys())
-
-                    learning_report = build_ai_learning_report(new_records, uploaded_file.name)
-                    st.session_state["ai_learning_report"] = learning_report
-
-                    if save_uploaded_dataset is not None:
-                        st.session_state["current_upload_id"] = save_uploaded_dataset(
-                            uploaded_file.name, new_records, column_names, upload_source="web_upload"
-                        )
-                    if save_learning_memory is not None:
-                        learning_summary = save_learning_memory(uploaded_file.name, new_records, column_names, upload_source="web_upload")
-                        st.session_state["ai_learning_summary"] = learning_summary
-
-                    persisted_count = get_uploaded_dataset_count() if get_uploaded_dataset_count is not None else None
-                    learning_snapshot = get_ai_learning_snapshot() if get_ai_learning_snapshot is not None else None
-
-                    if save_uploaded_dataset is not None and get_uploaded_dataset_count is not None:
-                        sidebar_status("success", f"✔ AI Learning Center đã sẵn sàng cho '{uploaded_file.name}'. Lần upload được nhớ thứ {persisted_count}.")
-                        if learning_snapshot:
-                            sidebar_status("muted", f"🧠 AI đã học được {learning_snapshot.get('total_records', len(new_records))} hồ sơ tích lũy. Chủ đề: {', '.join(learning_snapshot.get('top_keywords', [])[:2]) or 'đang cập nhật'}")
-                    else:
-                        sidebar_status("success", f"✔ AI Learning Center đã sẵn sàng cho '{uploaded_file.name}'.")
-            except ValueError as e:
-                sidebar_status("error", f"{e}")
-            except Exception as e:
-                sidebar_status("error", f"Lỗi không xác định khi đọc file: {e}")
-
-        st.caption("📌 File đã được chọn. AI sẽ tự động mở AI Learning Center và chờ bạn xác nhận trước khi sang Synthetic Data.")
-
-    if st.session_state.get("uploaded_records"):
-        st.caption(f"Đang dùng {len(st.session_state['uploaded_records'])} khách hàng từ file bạn tải lên (thay cho dữ liệu mẫu trong thư mục DATA/).")
-        st.caption("Dữ liệu upload được ghi nhớ để hệ thống học hành vi và dùng lại trong các lần chạy sau.")
-
-        ai_snapshot = get_ai_learning_snapshot() if get_ai_learning_snapshot is not None else None
-        if ai_snapshot:
-            st.markdown("<div class='msai-section-title'>🧠 Trạng thái học AI</div>", unsafe_allow_html=True)
-            st.info(
-                f"AI đã học tổng cộng {ai_snapshot.get('total_records', 0)} khách hàng từ {ai_snapshot.get('upload_count', 0)} lần upload. "
-                f"Chủ đề phổ biến: {', '.join(ai_snapshot.get('top_keywords', [])[:3]) or 'đang cập nhật'}. "
-                f"Tính cách phổ biến: {', '.join(ai_snapshot.get('top_traits', [])[:3]) or 'đang cập nhật'}."
-            )
-
-        if st.button("Bỏ file đã tải, dùng lại dữ liệu mẫu", use_container_width=True):
-            st.session_state["uploaded_records"] = None
-            st.rerun()
-
-    st.markdown("---")
-    st.markdown('<div class="msai-sidebar-label">Dữ liệu &amp; lịch sử</div>', unsafe_allow_html=True)
-    if os.path.exists(DB_PATH):
-        scenarios_sidebar = get_all_scenarios()
-        sidebar_status("muted", f"SQLite Database sẵn sàng — đã lưu {len(scenarios_sidebar)} chiến dịch.")
-        if scenarios_sidebar and st.button("Xoá toàn bộ lịch sử", use_container_width=True):
-            reset_db()
-            st.session_state.pop("selected_scenario_id", None)
-            st.rerun()
-    else:
-        sidebar_status("warning", "Chưa có dữ liệu mô phỏng.")
-
-if st.session_state.get("ai_learning_report"):
-    render_ai_learning_center(st.session_state["ai_learning_report"])
+    # Đã chuyển "Nạp dữ liệu khách hàng thật" + "Dữ liệu & lịch sử" sang tab
+    # riêng "📤 Dữ liệu khách hàng thật" (xem bên dưới, ngay sau nav_choice ==
+    # "🏠 Tổng quan") vì đây là phần quan trọng nhất của dự án, cần một trang
+    # riêng thay vì nằm gọn trong sidebar hẹp.
 
 
 # ĐÃ THAY st.tabs() BẰNG MENU ĐIỀU HƯỚNG Ở SIDEBAR (biến `nav_choice` được đọc
@@ -1211,9 +1113,103 @@ if nav_choice == "🏠 Tổng quan":
                 else:
                     st.markdown(
                         '<div class="msai-empty-card"><h4>Chưa có dữ liệu khách hàng</h4>'
-                        '<p>Tải file CSV/XLSX khách hàng ở sidebar để xem phân bố tâm lý theo nhóm.</p></div>',
+                        '<p>Sang tab \u201cDữ liệu khách hàng thật\u201d ở menu bên trái để tải file khách hàng lên.</p></div>',
                         unsafe_allow_html=True,
                     )
+
+# ==============================================================================
+# TAB: DỮ LIỆU KHÁCH HÀNG THẬT (được tách thành tab riêng theo yêu cầu, vì đây
+# là phần quan trọng nhất của dự án — trước đó nằm gọn trong sidebar hẹp, nay
+# có không gian rộng để nhìn rõ trạng thái nạp dữ liệu & AI Learning Center).
+# KHÔNG đổi logic xử lý file so với bản trước — chỉ chuyển vị trí hiển thị.
+# ==============================================================================
+if nav_choice == "📤 Dữ liệu khách hàng thật":
+    section_title("Nạp dữ liệu khách hàng thật")
+    st.caption("Đây là bước quan trọng nhất: AI chỉ mô phỏng đúng khách hàng của bạn nếu được học từ dữ liệu thật ở đây.")
+
+    with st.container(border=True):
+        uploaded_file = st.file_uploader(
+            "Tải file CSV/XLSX khách hàng",
+            type=["csv", "xlsx"],
+            help="Tối đa 1GB. Hỗ trợ schema tùy ý; app sẽ tự động trích xuất thông tin quan trọng để AI mô phỏng hành vi."
+        )
+        if uploaded_file is not None:
+            current_upload_name = getattr(uploaded_file, "name", None)
+            last_upload_name = st.session_state.get("ai_learning_file_name")
+            if current_upload_name and current_upload_name != last_upload_name:
+                try:
+                    st.session_state["ai_learning_file_name"] = current_upload_name
+                    file_size = getattr(uploaded_file, "size", None)
+                    if file_size is not None and file_size > MAX_UPLOAD_BYTES:
+                        raise ValueError("File quá lớn (>1GB). Vui lòng chọn file nhỏ hơn 1GB.")
+
+                    with st.spinner("AI đang mở AI Learning Center và học dữ liệu..."):
+                        new_records = load_uploaded_dataframe(uploaded_file)
+                        st.session_state["uploaded_records"] = new_records
+                        column_names = []
+                        if new_records:
+                            first_raw = new_records[0].get("raw_fields", {})
+                            column_names = sorted(first_raw.keys())
+
+                        learning_report = build_ai_learning_report(new_records, uploaded_file.name)
+                        st.session_state["ai_learning_report"] = learning_report
+
+                        if save_uploaded_dataset is not None:
+                            st.session_state["current_upload_id"] = save_uploaded_dataset(
+                                uploaded_file.name, new_records, column_names, upload_source="web_upload"
+                            )
+                        if save_learning_memory is not None:
+                            learning_summary = save_learning_memory(uploaded_file.name, new_records, column_names, upload_source="web_upload")
+                            st.session_state["ai_learning_summary"] = learning_summary
+
+                        persisted_count = get_uploaded_dataset_count() if get_uploaded_dataset_count is not None else None
+                        learning_snapshot = get_ai_learning_snapshot() if get_ai_learning_snapshot is not None else None
+
+                        if save_uploaded_dataset is not None and get_uploaded_dataset_count is not None:
+                            st.success(f"✔ AI Learning Center đã sẵn sàng cho '{uploaded_file.name}'. Lần upload được nhớ thứ {persisted_count}.")
+                            if learning_snapshot:
+                                st.info(f"🧠 AI đã học được {learning_snapshot.get('total_records', len(new_records))} hồ sơ tích lũy. Chủ đề: {', '.join(learning_snapshot.get('top_keywords', [])[:2]) or 'đang cập nhật'}")
+                        else:
+                            st.success(f"✔ AI Learning Center đã sẵn sàng cho '{uploaded_file.name}'.")
+                except ValueError as e:
+                    st.error(f"{e}")
+                except Exception as e:
+                    st.error(f"Lỗi không xác định khi đọc file: {e}")
+
+            st.caption("📌 File đã được chọn. AI sẽ tự động mở AI Learning Center và chờ bạn xác nhận trước khi sang Synthetic Data.")
+
+        if st.session_state.get("uploaded_records"):
+            st.caption(f"Đang dùng {len(st.session_state['uploaded_records'])} khách hàng từ file bạn tải lên (thay cho dữ liệu mẫu trong thư mục DATA/).")
+            st.caption("Dữ liệu upload được ghi nhớ để hệ thống học hành vi và dùng lại trong các lần chạy sau.")
+
+            ai_snapshot = get_ai_learning_snapshot() if get_ai_learning_snapshot is not None else None
+            if ai_snapshot:
+                st.markdown("<div class='msai-section-title'>🧠 Trạng thái học AI</div>", unsafe_allow_html=True)
+                st.info(
+                    f"AI đã học tổng cộng {ai_snapshot.get('total_records', 0)} khách hàng từ {ai_snapshot.get('upload_count', 0)} lần upload. "
+                    f"Chủ đề phổ biến: {', '.join(ai_snapshot.get('top_keywords', [])[:3]) or 'đang cập nhật'}. "
+                    f"Tính cách phổ biến: {', '.join(ai_snapshot.get('top_traits', [])[:3]) or 'đang cập nhật'}."
+                )
+
+            if st.button("Bỏ file đã tải, dùng lại dữ liệu mẫu", use_container_width=True):
+                st.session_state["uploaded_records"] = None
+                st.rerun()
+
+    if st.session_state.get("ai_learning_report"):
+        render_ai_learning_center(st.session_state["ai_learning_report"])
+
+    st.write("")
+    section_title("Dữ liệu & lịch sử")
+    with st.container(border=True):
+        if os.path.exists(DB_PATH):
+            scenarios_sidebar = get_all_scenarios()
+            st.info(f"SQLite Database sẵn sàng — đã lưu {len(scenarios_sidebar)} chiến dịch.")
+            if scenarios_sidebar and st.button("Xoá toàn bộ lịch sử", use_container_width=True):
+                reset_db()
+                st.session_state.pop("selected_scenario_id", None)
+                st.rerun()
+        else:
+            st.warning("Chưa có dữ liệu mô phỏng.")
 
 # ==============================================================================
 # TAB 1: MÔ PHỎNG CHIẾN DỊCH & BÁO CÁO SWOT
