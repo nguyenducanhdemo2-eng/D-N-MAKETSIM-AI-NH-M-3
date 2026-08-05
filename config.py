@@ -35,7 +35,7 @@ OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "qwen2.5:7b"       # đổi tên model nếu bạn pull bản khác (vd: qwen2.5:14b)
 NUM_PERSONAS_PER_CLUSTER = 10     # 10 persona/nhóm x 3 nhóm = 30 AI khách hàng
 MAX_CONCURRENT_REQUESTS = 8       # số request Ollama chạy song song tối đa (tùy VRAM RTX 3060)
-MAX_SIMULATED_PERSONAS = 100      # giới hạn tổng số persona được mô phỏng trong 1 lần chạy
+MAX_SIMULATED_PERSONAS = 200     # giới hạn tổng số persona được mô phỏng trong 1 lần chạy
 MAX_UPLOAD_BYTES = 1_000_000_000  # 1GB, hạn chế file upload quá lớn gây treo trình duyệt / server
 REQUEST_TIMEOUT_SEC = 120        # tăng lên 120s vì model 7B chạy CPU/máy yếu có thể mất 30-90s/câu trả lời
 
