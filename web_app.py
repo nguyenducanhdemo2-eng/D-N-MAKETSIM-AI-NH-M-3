@@ -587,29 +587,72 @@ if "logged_in" not in st.session_state:
 def render_auth_gate():
     st.markdown("""
     <style>
-    .auth-card {
-        background: linear-gradient(135deg, rgba(10,16,33,0.95), rgba(25,46,92,0.92));
-        border-radius: 20px;
-        padding: 24px;
-        box-shadow: 0 12px 34px rgba(0,0,0,0.25);
-        border: 1px solid rgba(255,255,255,0.12);
+    .auth-shell {
+        padding: 18px 0 28px 0;
     }
-    .auth-card h3, .auth-card p, .auth-card label, .auth-card span {
+    .auth-card {
+        max-width: 560px;
+        margin: 0 auto;
+        background: linear-gradient(135deg, rgba(10, 20, 43, 0.97), rgba(24, 58, 112, 0.96));
+        border-radius: 24px;
+        padding: 28px 28px 24px 28px;
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+    .auth-brand {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+        color: #F8FAFF;
+        font-weight: 700;
+        font-size: 13px;
+        letter-spacing: 0.04em;
+        margin-bottom: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+    }
+    .auth-card h3, .auth-card p, .auth-card label, .auth-card span, .auth-card .stCheckbox {
         color: #F6F8FF !important;
+    }
+    .auth-card .stTextInput input, .auth-card .stTextArea textarea {
+        border-radius: 12px !important;
+        border: 1px solid rgba(255, 255, 255, 0.18) !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: #F6F8FF !important;
+    }
+    .auth-card .stTextInput input::placeholder, .auth-card .stTextArea textarea::placeholder {
+        color: rgba(246, 248, 255, 0.65) !important;
+    }
+    .auth-card .stRadio > div {
+        gap: 10px;
+    }
+    .auth-card .stRadio label {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .auth-card .stAlert {
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="auth-card">', unsafe_allow_html=True)
-    with st.container():
-        st.markdown("### Đăng nhập hệ thống")
+    st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
+    left_col, center_col, right_col = st.columns([1, 2.2, 1])
+    with center_col:
+        st.markdown('<div class="auth-card">', unsafe_allow_html=True)
+        st.markdown("<div class='auth-brand'>MarketSim AI</div>", unsafe_allow_html=True)
+        st.markdown("### 🔐 Đăng nhập hệ thống")
         st.caption("Đăng nhập hoặc tạo tài khoản để tiếp tục sử dụng MarketSim AI")
         mode = st.radio("Chế độ", ["Đăng nhập", "Đăng ký"], horizontal=True)
 
         if mode == "Đăng nhập":
             with st.form("form_login"):
-                email_in = st.text_input("Email")
-                pw_in = st.text_input("Mật khẩu", type="password")
+                email_in = st.text_input("Email", placeholder="name@example.com")
+                pw_in = st.text_input("Mật khẩu", type="password", placeholder="Nhập mật khẩu")
                 submit_login = st.form_submit_button("Đăng nhập", use_container_width=True)
             if submit_login:
                 if verify_user(email_in, pw_in):
@@ -620,9 +663,9 @@ def render_auth_gate():
                     st.error("Email hoặc mật khẩu không đúng.")
         else:
             with st.form("form_register"):
-                email_r = st.text_input("Email")
-                pw_r = st.text_input("Mật khẩu (tối thiểu 6 ký tự)", type="password")
-                pw_r2 = st.text_input("Nhập lại mật khẩu", type="password")
+                email_r = st.text_input("Email", placeholder="name@example.com")
+                pw_r = st.text_input("Mật khẩu (tối thiểu 6 ký tự)", type="password", placeholder="Tối thiểu 6 ký tự")
+                pw_r2 = st.text_input("Nhập lại mật khẩu", type="password", placeholder="Nhập lại mật khẩu")
                 submit_register = st.form_submit_button("Tạo tài khoản", use_container_width=True)
             if submit_register:
                 if pw_r != pw_r2:
@@ -633,6 +676,7 @@ def render_auth_gate():
                         st.success("Tạo tài khoản thành công. Hãy đăng nhập bằng tài khoản mới.")
                     except ValueError as e:
                         st.error(str(e))
+        st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
