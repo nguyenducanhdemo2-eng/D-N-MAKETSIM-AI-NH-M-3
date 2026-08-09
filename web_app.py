@@ -588,54 +588,146 @@ def render_auth_gate():
     st.markdown("""
     <style>
     .auth-shell {
-        padding: 18px 0 28px 0;
+        padding: 32px 0 40px 0;
     }
     .auth-card {
-        max-width: 560px;
+        max-width: 740px;
         margin: 0 auto;
-        background: linear-gradient(135deg, rgba(10, 20, 43, 0.97), rgba(24, 58, 112, 0.96));
-        border-radius: 24px;
-        padding: 28px 28px 24px 28px;
-        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(11, 29, 58, 0.94);
+        border-radius: 28px;
+        padding: 36px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.30);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        backdrop-filter: blur(18px);
+        font-family: 'Be Vietnam Pro', 'Segoe UI', Tahoma, Geneva, sans-serif;
+    }
+    .auth-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 26px;
+        align-items: start;
+    }
+    .auth-aside {
+        border-radius: 22px;
+        padding: 26px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        min-height: 320px;
+    }
+    .auth-aside h4 {
+        margin: 0 0 14px 0;
+        color: #EAF0FB;
+        font-size: 16px;
+        font-weight: 700;
+    }
+    .auth-aside p {
+        margin: 0 0 12px 0;
+        color: rgba(234, 240, 251, 0.78);
+        line-height: 1.75;
+        font-size: 14px;
     }
     .auth-brand {
-        display: inline-block;
-        padding: 6px 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 16px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.12);
-        color: #F8FAFF;
+        background: rgba(255, 255, 255, 0.08);
+        color: #EAF0FB;
         font-weight: 700;
         font-size: 13px;
         letter-spacing: 0.04em;
-        margin-bottom: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
+        margin-bottom: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
     }
-    .auth-card h3, .auth-card p, .auth-card label, .auth-card span, .auth-card .stCheckbox {
+    .auth-brand::before {
+        content: '';
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #5BC7FF, #3D83FF);
+    }
+    .auth-card h3 {
+        margin: 0;
+        color: #FFFFFF !important;
+        font-size: 30px;
+        font-weight: 800 !important;
+    }
+    .auth-card p, .auth-card label, .auth-card span, .auth-card .stCheckbox {
+        color: rgba(234, 240, 251, 0.86) !important;
+    }
+    .auth-card .stTextInput input,
+    .auth-card .stTextArea textarea {
+        border-radius: 14px !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        background: rgba(255, 255, 255, 0.06) !important;
         color: #F6F8FF !important;
+        min-height: 50px;
+        padding: 14px 16px !important;
     }
-    .auth-card .stTextInput input, .auth-card .stTextArea textarea {
-        border-radius: 12px !important;
-        border: 1px solid rgba(255, 255, 255, 0.18) !important;
-        background: rgba(255, 255, 255, 0.08) !important;
-        color: #F6F8FF !important;
-    }
-    .auth-card .stTextInput input::placeholder, .auth-card .stTextArea textarea::placeholder {
-        color: rgba(246, 248, 255, 0.65) !important;
+    .auth-card .stTextInput input::placeholder,
+    .auth-card .stTextArea textarea::placeholder {
+        color: rgba(255, 255, 255, 0.55) !important;
     }
     .auth-card .stRadio > div {
         gap: 10px;
+        flex-wrap: wrap;
     }
     .auth-card .stRadio label {
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 999px;
-        padding: 8px 12px;
-        background: rgba(255, 255, 255, 0.06);
+        padding: 10px 16px;
+        background: rgba(255, 255, 255, 0.05);
+        color: #EAEFFF;
+        transition: all 0.18s ease;
+    }
+    .auth-card .stRadio label:hover {
+        border-color: rgba(91, 199, 255, 0.6);
+    }
+    .auth-card .stRadio input:checked + label,
+    .auth-card .stRadio [aria-checked="true"] + label {
+        background: linear-gradient(90deg, #3077D3, #53B1F4) !important;
+        border-color: transparent !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 10px 28px rgba(49, 95, 178, 0.24);
     }
     .auth-card .stAlert {
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
         background: rgba(255, 255, 255, 0.08);
+    }
+    .auth-card .stButton > button,
+    .auth-card .stFormSubmitButton > button {
+        border-radius: 999px !important;
+        font-weight: 700 !important;
+        background: linear-gradient(90deg, #2F7BD8, #4AA4F0) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        padding: 14px 0 !important;
+        box-shadow: 0 12px 28px rgba(39, 119, 216, 0.25) !important;
+    }
+    .auth-card .stButton > button:hover,
+    .auth-card .stFormSubmitButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 32px rgba(39, 119, 216, 0.32) !important;
+    }
+    .auth-bottom {
+        margin-top: 18px;
+        color: rgba(234, 240, 251, 0.65);
+        font-size: 13px;
+        line-height: 1.7;
+    }
+    .auth-bottom a {
+        color: #A7C8FF;
+        text-decoration: none;
+    }
+    @media (max-width: 900px) {
+        .auth-grid {
+            grid-template-columns: 1fr;
+        }
+        .auth-aside {
+            min-height: auto;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -649,33 +741,47 @@ def render_auth_gate():
         st.caption("Đăng nhập hoặc tạo tài khoản để tiếp tục sử dụng MarketSim AI")
         mode = st.radio("Chế độ", ["Đăng nhập", "Đăng ký"], horizontal=True)
 
-        if mode == "Đăng nhập":
-            with st.form("form_login"):
-                email_in = st.text_input("Email", placeholder="name@example.com")
-                pw_in = st.text_input("Mật khẩu", type="password", placeholder="Nhập mật khẩu")
-                submit_login = st.form_submit_button("Đăng nhập", use_container_width=True)
-            if submit_login:
-                if verify_user(email_in, pw_in):
-                    st.session_state["logged_in"] = True
-                    st.session_state["user_email"] = email_in.strip().lower()
-                    st.rerun()
-                else:
-                    st.error("Email hoặc mật khẩu không đúng.")
-        else:
-            with st.form("form_register"):
-                email_r = st.text_input("Email", placeholder="name@example.com")
-                pw_r = st.text_input("Mật khẩu (tối thiểu 6 ký tự)", type="password", placeholder="Tối thiểu 6 ký tự")
-                pw_r2 = st.text_input("Nhập lại mật khẩu", type="password", placeholder="Nhập lại mật khẩu")
-                submit_register = st.form_submit_button("Tạo tài khoản", use_container_width=True)
-            if submit_register:
-                if pw_r != pw_r2:
-                    st.error("Mật khẩu nhập lại không khớp.")
-                else:
-                    try:
-                        create_user(email_r, pw_r)
-                        st.success("Tạo tài khoản thành công. Hãy đăng nhập bằng tài khoản mới.")
-                    except ValueError as e:
-                        st.error(str(e))
+        form_col, side_col = st.columns([2.25, 1])
+        with form_col:
+            if mode == "Đăng nhập":
+                with st.form("form_login"):
+                    email_in = st.text_input("Email", placeholder="name@example.com")
+                    pw_in = st.text_input("Mật khẩu", type="password", placeholder="Nhập mật khẩu")
+                    submit_login = st.form_submit_button("Đăng nhập", use_container_width=True)
+                if submit_login:
+                    if verify_user(email_in, pw_in):
+                        st.session_state["logged_in"] = True
+                        st.session_state["user_email"] = email_in.strip().lower()
+                        st.rerun()
+                    else:
+                        st.error("Email hoặc mật khẩu không đúng.")
+            else:
+                with st.form("form_register"):
+                    email_r = st.text_input("Email", placeholder="name@example.com")
+                    pw_r = st.text_input("Mật khẩu (tối thiểu 6 ký tự)", type="password", placeholder="Tối thiểu 6 ký tự")
+                    pw_r2 = st.text_input("Nhập lại mật khẩu", type="password", placeholder="Nhập lại mật khẩu")
+                    submit_register = st.form_submit_button("Tạo tài khoản", use_container_width=True)
+                if submit_register:
+                    if pw_r != pw_r2:
+                        st.error("Mật khẩu nhập lại không khớp.")
+                    else:
+                        try:
+                            create_user(email_r, pw_r)
+                            st.success("Tạo tài khoản thành công. Hãy đăng nhập bằng tài khoản mới.")
+                        except ValueError as e:
+                            st.error(str(e))
+
+        with side_col:
+            st.markdown('<div class="auth-aside">', unsafe_allow_html=True)
+            st.markdown('<h4>MarketSim AI dành cho doanh nghiệp</h4>', unsafe_allow_html=True)
+            st.markdown('<p>Quản lý phân tích và mô phỏng chiến dịch marketing với giao diện hiện đại, tối ưu cho doanh nghiệp.</p>', unsafe_allow_html=True)
+            st.markdown('<p><strong>Ưu điểm chính:</strong></p>', unsafe_allow_html=True)
+            st.markdown('<ul style="margin:0;padding-left:18px;color:rgba(234,240,251,0.82)"><li>Đăng nhập nhanh, bảo mật cao.</li><li>Giao diện chuyên nghiệp, bố cục rõ ràng.</li><li>Tối ưu cho trải nghiệm trên máy tính và trình duyệt.</li></ul>', unsafe_allow_html=True)
+            st.markdown('<p><strong>Lợi ích cho bộ phận marketing:</strong></p>', unsafe_allow_html=True)
+            st.markdown('<p>Công cụ hỗ trợ quyết định chiến dịch, phân tích khách hàng, tối ưu thông điệp và đánh giá hiệu quả nhanh chóng.</p>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("<div class='auth-bottom'>Bằng cách tiếp tục, bạn đồng ý với chính sách bảo mật và điều khoản sử dụng.</div>", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
