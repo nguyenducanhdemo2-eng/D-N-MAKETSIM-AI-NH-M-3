@@ -1,6 +1,6 @@
 ﻿# ============================================================================== 
 # MAIN.PY - ĐẦU NÃO ĐIỀU HÀNH HỆ THỐNG MARKETSIM AI
-# Tích hợp 2 chế độ: Desktop (CustomTkinter) và Web (Streamlit)
+# Tích hợp 2 chế độ: Desktop (pywebview bọc quanh Streamlit) và Web (Streamlit)
 
 import argparse
 import os
@@ -40,10 +40,14 @@ except Exception as e:
 # ------------------------------------------------------------------------------
 # 2. IMPORT GIAO DIỆN CHO CÁC CHẾ ĐỘ
 # ------------------------------------------------------------------------------
+# LƯU Ý: app_gui.py KHÔNG dùng CustomTkinter và KHÔNG có class ModernMarketSimApp.
+# Đây là module chạy Streamlit (web_app.py) trong 1 luồng nền, rồi mở 1 cửa sổ
+# desktop gốc bằng pywebview trỏ vào địa chỉ localhost đó (xem docstring đầu
+# file app_gui.py). Chỉ cần import module để gọi hàm main() của nó.
 try:
-    from app_gui import ModernMarketSimApp
+    import app_gui
 except Exception:
-    ModernMarketSimApp = None
+    app_gui = None
 
 
 # ============================================================================== 
@@ -54,8 +58,8 @@ def print_launcher_menu():
     print("🚀 MARKETSIM AI — TRÌNH KHỞI CHẠY")
     print("=" * 72)
     print("Chọn cách mở hệ thống:")
-    print("  [1] 🌐 WE      — Mở giao diện Streamlit trên trình duyệt")
-    print("  [2] 🖥️ DESKTOP  — Mở ứng dụng Desktop bằng CustomTkinter")
+    print("  [1] 🌐 WEB      — Mở giao diện Streamlit trên trình duyệt")
+    print("  [2] 🖥️ DESKTOP  — Mở ứng dụng Desktop (cửa sổ pywebview chạy Streamlit nội bộ)")
     print("  [3] 🔎 CHECK    — Chỉ kiểm tra môi trường trước khi chạy")
     print("=" * 72)
 
@@ -89,11 +93,17 @@ def validate_environment(mode: str):
             issues.append("Không tìm thấy file web_app.py")
     elif mode == "desktop":
         try:
-            import customtkinter  # noqa: F401
+            import webview  # noqa: F401  (pywebview -- gói cài đặt tên 'pywebview', import tên 'webview')
         except ImportError:
-            issues.append("Thiếu thư viện customtkinter")
+            issues.append("Thiếu thư viện pywebview (cài bằng: pip install pywebview)")
+        try:
+            import streamlit  # noqa: F401  (desktop chạy Streamlit nền, vẫn cần thư viện này)
+        except ImportError:
+            issues.append("Thiếu thư viện streamlit")
         if not os.path.exists(os.path.join(BASE_DIR, "app_gui.py")):
             issues.append("Không tìm thấy file app_gui.py")
+        if not os.path.exists(os.path.join(BASE_DIR, "web_app.py")):
+            issues.append("Không tìm thấy file web_app.py (app_gui.py chạy lại chính file này)")
 
     if issues:
         print("⚠️ Một số thành phần cần thiết chưa sẵn sàng:")
@@ -133,14 +143,16 @@ def launch_web():
 
 
 def launch_desktop():
-    print("🖥️ Đang mở giao diện Desktop (CustomTkinter)...")
-    if ModernMarketSimApp is None:
-        print("❌ Không thể khởi động Desktop vì module app_gui chưa sẵn sàng.")
+    print("🖥️ Đang mở giao diện Desktop (pywebview bọc quanh Streamlit)...")
+    if app_gui is None:
+        print("❌ Không thể khởi động Desktop vì module app_gui chưa sẵn sàng "
+              "(thiếu pywebview hoặc lỗi import). Chạy 'pip install pywebview' rồi thử lại.")
         return 1
 
     try:
-        app = ModernMarketSimApp()
-        app.mainloop()
+        # app_gui.main(): tự tìm cổng trống, chạy Streamlit (web_app.py) ở luồng
+        # nền, đợi server sẵn sàng, rồi mở cửa sổ pywebview trỏ vào localhost đó.
+        app_gui.main()
         return 0
     except Exception as e:
         print(f"❌ Lỗi khi mở Desktop UI: {e}")
