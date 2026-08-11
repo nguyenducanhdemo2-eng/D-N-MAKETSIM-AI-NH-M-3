@@ -8,3 +8,15 @@ openpyxl>=3.1
 aiohttp>=3.9
 tqdm>=4.66
 requests>=2.31
+streamlit
+pandas
+numpy
+matplotlib
+scikit-learn
+requests
+beautifulsoup4
+pytrends
+openpyxl
+aiohttp
+tqdm
+groq
