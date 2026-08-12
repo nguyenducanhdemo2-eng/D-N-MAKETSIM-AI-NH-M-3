@@ -16,6 +16,7 @@ Legacy compatibility:
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import sqlite3
 from typing import Any
@@ -32,6 +33,76 @@ def _conn():
 
 def _table_columns(c, table: str) -> set[str]:
     return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def normalize_join_code(value: str | None) -> str:
+    """Normalize copy/pasted company join codes without weakening tenant checks.
+
+    Accepted examples for the generated code MS-ABCD-EFGH:
+      - MS-ABCD-EFGH
+      - ms-abcd-efgh
+      - " MS-ABCD-EFGH "
+      - MS ABCD EFGH
+      - MSABCDefgh
+    The normalized value is always returned as MS-XXXX-XXXX when possible.
+    """
+    raw = (value or '').strip().upper()
+    if not raw:
+        return ''
+    # Normalize common Unicode dash characters created by mobile/office copy-paste.
+    raw = re.sub(r'[‐‑‒–—―−]+', '-', raw)
+    compact = re.sub(r'[^A-Z0-9]', '', raw)
+    if len(compact) == 10 and compact.startswith('MS'):
+        return f"MS-{compact[2:6]}-{compact[6:10]}"
+    return raw.replace(' ', '')
+
+
+def _reconcile_memberships(c: sqlite3.Connection) -> dict[str, int]:
+    """Repair only unambiguous legacy membership links.
+
+    company_id is treated as the primary tenant link when present. If it is
+    missing but admin_owner_id points to an ADMIN that owns a company, the
+    company_id can be restored safely. No employee is moved from one explicit
+    company_id to another company here.
+    """
+    repaired_company = 0
+    repaired_owner = 0
+    repaired_admin = 0
+
+    # Every company owner must point back to its own company.
+    owners = c.execute("SELECT id,owner_admin_id FROM companies").fetchall()
+    for company in owners:
+        cur = c.execute(
+            "UPDATE users SET role='admin',admin_owner_id=NULL,company_id=? "
+            "WHERE id=? AND (company_id IS NULL OR company_id=?) "
+            "AND (role!='admin' OR admin_owner_id IS NOT NULL OR company_id IS NULL)",
+            (int(company['id']), int(company['owner_admin_id']), int(company['id'])),
+        )
+        repaired_admin += max(0, int(cur.rowcount or 0))
+
+    # Old employee records sometimes only had admin_owner_id.
+    cur = c.execute("""
+        UPDATE users
+        SET company_id=(SELECT co.id FROM companies co WHERE co.owner_admin_id=users.admin_owner_id)
+        WHERE role='employee' AND company_id IS NULL AND admin_owner_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM companies co WHERE co.owner_admin_id=users.admin_owner_id)
+    """)
+    repaired_company += max(0, int(cur.rowcount or 0))
+
+    # When company_id is known, keep the legacy admin_owner_id synchronized.
+    cur = c.execute("""
+        UPDATE users
+        SET admin_owner_id=(SELECT co.owner_admin_id FROM companies co WHERE co.id=users.company_id)
+        WHERE role='employee' AND company_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM companies co WHERE co.id=users.company_id)
+          AND (admin_owner_id IS NULL OR admin_owner_id != (SELECT co.owner_admin_id FROM companies co WHERE co.id=users.company_id))
+    """)
+    repaired_owner += max(0, int(cur.rowcount or 0))
+    return {
+        'company_id_repaired': repaired_company,
+        'admin_owner_repaired': repaired_owner,
+        'admin_repaired': repaired_admin,
+    }
 
 
 def init_admin_schema():
@@ -118,6 +189,7 @@ def init_admin_schema():
             c.execute("UPDATE users SET company_id=? WHERE id=?", (company_id, p["admin_user_id"]))
             c.execute("UPDATE users SET company_id=? WHERE admin_owner_id=? AND company_id IS NULL", (company_id, p["admin_user_id"]))
 
+        _reconcile_memberships(c)
         c.commit()
 
 
@@ -169,30 +241,69 @@ def _admin_company(admin_id: int) -> dict | None:
 
 def find_admin_by_join_code(join_code: str) -> dict | None:
     init_admin_schema()
-    code = (join_code or '').strip().upper()
+    code = normalize_join_code(join_code)
     if not code:
         return None
     with _conn() as c:
+        _reconcile_memberships(c)
         r = c.execute("""
             SELECT u.id,u.email,u.display_name,c.id AS company_id,c.organization_name,c.join_code
             FROM companies c JOIN users u ON u.id=c.owner_admin_id
-            WHERE c.join_code=? AND c.is_active=1 AND u.role='admin' AND u.is_active=1
+            WHERE UPPER(c.join_code)=? AND c.is_active=1 AND u.role='admin' AND u.is_active=1
         """, (code,)).fetchone()
-        return dict(r) if r else None
+        if r:
+            c.commit()
+            return dict(r)
+
+        # Backward compatibility for installations that still have an older
+        # admin_profiles row but have not completed the companies migration yet.
+        legacy = c.execute("""
+            SELECT p.admin_user_id AS id,u.email,u.display_name,p.organization_name,p.join_code,u.company_id
+            FROM admin_profiles p JOIN users u ON u.id=p.admin_user_id
+            WHERE UPPER(p.join_code)=? AND u.role='admin' AND u.is_active=1
+        """, (code,)).fetchone()
+        if legacy:
+            # init_admin_schema normally creates this tenant. Run it once more
+            # outside the current connection on the next call rather than
+            # guessing/moving a member here.
+            c.commit()
+            return dict(legacy)
+        c.commit()
+        return None
 
 
-def attach_employee(user_id: int, admin_id: int, display_name: str = ''):
+def attach_employee(user_id: int, admin_id: int, display_name: str = '') -> dict:
+    """Attach exactly one employee to the ADMIN's company and return membership.
+
+    This is intentionally strict: an account already attached to another
+    company is never silently moved.
+    """
     init_admin_schema()
     company = _admin_company(admin_id)
     if not company or not int(company.get("is_active") or 0):
         raise ValueError("Doanh nghiệp không tồn tại hoặc đã bị vô hiệu hóa.")
+    company_id = int(company["company_id"])
     with _conn() as c:
+        current = c.execute("SELECT id,role,company_id,admin_owner_id FROM users WHERE id=?", (int(user_id),)).fetchone()
+        if not current:
+            raise ValueError("Không tìm thấy tài khoản nhân viên vừa tạo.")
+        existing_company = current['company_id']
+        if existing_company is not None and int(existing_company) != company_id:
+            raise ValueError("Tài khoản này đã thuộc một doanh nghiệp khác.")
+        if current['role'] == 'admin':
+            raise ValueError("Tài khoản ADMIN không thể đăng ký lại dưới vai trò nhân viên.")
         c.execute("""
             UPDATE users
             SET role='employee', admin_owner_id=?, company_id=?, display_name=?, is_active=1
             WHERE id=?
-        """, (int(admin_id), int(company["company_id"]), (display_name or '').strip() or None, int(user_id)))
+        """, (int(admin_id), company_id, (display_name or '').strip() or None, int(user_id)))
         c.commit()
+    return {
+        'user_id': int(user_id),
+        'admin_id': int(admin_id),
+        'company_id': company_id,
+        'organization_name': company.get('organization_name'),
+    }
 
 
 def create_company_admin(user_id: int, display_name: str = '', organization_name: str = '') -> dict:
@@ -409,12 +520,47 @@ def admin_overview(admin_id: int) -> dict[str, Any]:
     }
 
 
+def admin_team_health(admin_id: int) -> dict[str, Any]:
+    """Return membership diagnostics scoped to this ADMIN only."""
+    require_admin_account(admin_id)
+    company = _admin_company(admin_id) or {}
+    company_id = int(company.get('company_id') or 0)
+    with _conn() as c:
+        repairs = _reconcile_memberships(c)
+        total = int(c.execute("SELECT COUNT(*) FROM users WHERE company_id=? AND role='employee'", (company_id,)).fetchone()[0] or 0)
+        active = int(c.execute("SELECT COUNT(*) FROM users WHERE company_id=? AND role='employee' AND is_active=1", (company_id,)).fetchone()[0] or 0)
+        legacy_unlinked = int(c.execute("""
+            SELECT COUNT(*) FROM users
+            WHERE role='employee' AND company_id IS NULL AND admin_owner_id=?
+        """, (int(admin_id),)).fetchone()[0] or 0)
+        # Explicit cross-company conflicts are reported, never auto-moved.
+        conflicts = int(c.execute("""
+            SELECT COUNT(*) FROM users u
+            WHERE u.role='employee' AND u.admin_owner_id=? AND u.company_id IS NOT NULL AND u.company_id!=?
+        """, (int(admin_id), company_id)).fetchone()[0] or 0)
+        c.commit()
+    return {
+        'ok': conflicts == 0 and legacy_unlinked == 0,
+        'company_id': company_id,
+        'organization_name': company.get('organization_name'),
+        'join_code': company.get('join_code'),
+        'employees': total,
+        'active_employees': active,
+        'legacy_unlinked': legacy_unlinked,
+        'membership_conflicts': conflicts,
+        'repairs': repairs,
+    }
+
+
 def admin_staff(admin_id: int) -> list[dict]:
     require_admin_account(admin_id)
     company = _admin_company(admin_id)
+    company_id = int(company["company_id"])
     with _conn() as c:
+        _reconcile_memberships(c)
+        c.commit()
         rows = c.execute("""
-            SELECT u.id,u.email,u.display_name,u.created_at,u.is_active,
+            SELECT u.id,u.email,u.display_name,u.created_at,u.is_active,u.company_id,u.admin_owner_id,
               (SELECT COUNT(*) FROM uploaded_datasets d WHERE d.user_id=u.id) datasets,
               (SELECT COALESCE(SUM(d.record_count),0) FROM uploaded_datasets d WHERE d.user_id=u.id) uploaded_records,
               (SELECT COUNT(*) FROM scenarios s WHERE s.user_id=u.id) projects,
@@ -422,7 +568,7 @@ def admin_staff(admin_id: int) -> list[dict]:
               (SELECT MAX(a.created_at) FROM activity_logs a WHERE a.user_id=u.id) last_activity
             FROM users u WHERE u.company_id=? AND u.role='employee'
             ORDER BY u.id DESC
-        """, (int(company["company_id"]),)).fetchall()
+        """, (company_id,)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -430,8 +576,10 @@ def admin_employee_detail(admin_id: int, employee_id: int) -> dict:
     require_admin_account(admin_id)
     company = _admin_company(admin_id)
     with _conn() as c:
+        _reconcile_memberships(c)
+        c.commit()
         u = c.execute("""
-            SELECT id,email,display_name,created_at,is_active FROM users
+            SELECT id,email,display_name,created_at,is_active,company_id,admin_owner_id FROM users
             WHERE id=? AND company_id=? AND role='employee'
         """, (int(employee_id), int(company["company_id"]))).fetchone()
         if not u:
@@ -485,3 +633,50 @@ def activity_name(path: str, method: str) -> str:
         if p.startswith(prefix):
             return label
     return f"{method.upper()} {p}"
+
+# ---------------------------------------------------------------------------
+# Per-company schema memory: remembers column mappings that were explicitly
+# confirmed through the staged onboarding flow. This reduces repeated LLM use.
+# ---------------------------------------------------------------------------
+def init_company_schema_memory():
+    init_admin_schema()
+    with _conn() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS company_schema_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                source_column TEXT NOT NULL,
+                canonical_field TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                confirmation_count INTEGER NOT NULL DEFAULT 1,
+                last_confirmed_by INTEGER,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, source_column),
+                FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_company_schema_memory ON company_schema_memory(company_id,source_column)")
+        c.commit()
+
+def get_company_schema_mapping(company_id:int|None, source_column:str) -> dict|None:
+    if not company_id:return None
+    init_company_schema_memory()
+    with _conn() as c:
+        r=c.execute("SELECT source_column,canonical_field,confidence,confirmation_count,updated_at FROM company_schema_memory WHERE company_id=? AND LOWER(source_column)=LOWER(?)",(int(company_id),str(source_column))).fetchone()
+        return dict(r) if r else None
+
+def save_company_schema_mappings(company_id:int|None, user_id:int, mappings:list[dict]):
+    if not company_id:return 0
+    init_company_schema_memory(); saved=0
+    with _conn() as c:
+        for m in mappings or []:
+            src=str(m.get('source_column') or '').strip(); field=str(m.get('canonical_field') or '').strip()
+            if not src or not field or field in ('unmapped','unknown_column'):continue
+            existing=c.execute("SELECT id,confirmation_count FROM company_schema_memory WHERE company_id=? AND LOWER(source_column)=LOWER(?)",(int(company_id),src)).fetchone()
+            if existing:
+                c.execute("UPDATE company_schema_memory SET canonical_field=?,confidence=1.0,confirmation_count=?,last_confirmed_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(field,int(existing['confirmation_count'] or 0)+1,int(user_id),int(existing['id'])))
+            else:
+                c.execute("INSERT INTO company_schema_memory(company_id,source_column,canonical_field,confidence,confirmation_count,last_confirmed_by) VALUES(?,?,?,?,1,?)",(int(company_id),src,field,1.0,int(user_id)))
+            saved+=1
+        c.commit()
+    return saved

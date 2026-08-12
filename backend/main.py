@@ -19,8 +19,8 @@ from advanced_simulation import simulate_twins, paired_compare, optimize_marketi
 from .auth_db import init_auth, create_session, get_user, delete_session
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
     create_company_admin, bootstrap_code_valid, require_admin_account, get_admin_profile, regenerate_join_code,
-    admin_overview, admin_staff, admin_employee_detail, admin_activity, set_employee_active,
-    record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
+    admin_overview, admin_staff, admin_employee_detail, admin_activity, admin_team_health, set_employee_active,
+    normalize_join_code, record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
 from .ai_provider import check_all, check_groq, check_ollama, chat
 from .ai_bridge import call_text
 from staged_data_workflow import inspect_dataframe, apply_learned_fields, build_audit
@@ -109,6 +109,7 @@ class EmployeeRegister(BaseModel):
     email:str; password:str; leader_code:str; display_name:str=''
 class AdminRegister(BaseModel):
     email:str; password:str; display_name:str=''; organization_name:str=''; bootstrap_code:str=''
+class CompanyCodeBody(BaseModel): code:str
 class ActiveBody(BaseModel): active:bool
 class Provider(BaseModel): provider:str
 class MappingBody(BaseModel): mappings:list[dict]
@@ -246,18 +247,50 @@ def auth_admin_status():
         'bootstrap_protected': bool(__import__('os').getenv('ADMIN_BOOTSTRAP_CODE','').strip()),
     }
 
+@app.post('/api/auth/validate-company-code')
+def validate_company_code(b:CompanyCodeBody):
+    code=normalize_join_code(b.code)
+    admin=find_admin_by_join_code(code)
+    if not admin:
+        return {'valid':False,'normalized_code':code,'message':'Mã tham gia doanh nghiệp không hợp lệ hoặc đã hết hiệu lực.'}
+    return {
+        'valid':True,
+        'normalized_code':admin.get('join_code') or code,
+        'company_id':admin.get('company_id'),
+        'organization':admin.get('organization_name'),
+        'admin_name':admin.get('display_name') or 'ADMIN',
+    }
+
 @app.post('/api/auth/register')
 def register(b:EmployeeRegister):
-    admin=find_admin_by_join_code(b.leader_code)
+    code=normalize_join_code(b.leader_code)
+    admin=find_admin_by_join_code(code)
     if not admin:
-        raise HTTPException(400,'Mã doanh nghiệp / mã của người đứng đầu không đúng hoặc đã hết hiệu lực.')
+        raise HTTPException(400,'Mã tham gia doanh nghiệp không đúng hoặc đã hết hiệu lực. Hãy sao chép lại mã mới nhất từ ADMIN.')
+    uid=None
     try:
         uid=create_user(b.email,b.password)
-        attach_employee(uid,admin['id'],b.display_name)
-        record_activity(uid,'Tạo tài khoản nhân viên','/api/auth/register','POST',200,f"Thuộc {admin.get('organization_name','doanh nghiệp')}")
+        membership=attach_employee(uid,admin['id'],b.display_name)
+        record_activity(uid,'Tạo tài khoản nhân viên','/api/auth/register','POST',200,f"Gia nhập {admin.get('organization_name','doanh nghiệp')} · company_id={membership.get('company_id')}")
     except Exception as e:
+        # Do not leave an orphan account that blocks the employee from retrying
+        # when membership attachment failed after create_user succeeded.
+        if uid:
+            try:
+                import sqlite3
+                with sqlite3.connect(config.DB_PATH) as c:
+                    c.execute("DELETE FROM users WHERE id=? AND company_id IS NULL AND role='employee'",(int(uid),))
+                    c.commit()
+            except Exception:
+                pass
         raise HTTPException(400,str(e))
-    return {'ok':True,'user_id':uid,'organization':admin.get('organization_name')}
+    return {
+        'ok':True,
+        'user_id':uid,
+        'company_id':membership.get('company_id'),
+        'organization':membership.get('organization_name') or admin.get('organization_name'),
+        'join_code':admin.get('join_code'),
+    }
 
 @app.post('/api/auth/register-admin')
 def register_admin(b:AdminRegister):
@@ -316,7 +349,13 @@ def admin_overview_api(req:Request):
     u=current_admin(req); return json_safe(admin_overview(u['id']))
 @app.get('/api/admin/staff')
 def admin_staff_api(req:Request):
-    u=current_admin(req); return json_safe({'items':admin_staff(u['id'])})
+    u=current_admin(req)
+    return json_safe({'items':admin_staff(u['id']),'health':admin_team_health(u['id'])})
+
+@app.get('/api/admin/team-status')
+def admin_team_status_api(req:Request):
+    u=current_admin(req)
+    return json_safe(admin_team_health(u['id']))
 @app.get('/api/admin/staff/{employee_id}')
 def admin_staff_detail_api(req:Request,employee_id:int):
     u=current_admin(req)
