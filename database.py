@@ -15,9 +15,34 @@ import pandas as pd
 from config import DB_PATH
 
 
+def _connect():
+    """SQLite connection tuned for concurrent web requests without changing SQL semantics."""
+    path=os.path.abspath(str(DB_PATH))
+    os.makedirs(os.path.dirname(path) or '.',exist_ok=True)
+    conn=sqlite3.connect(path,timeout=30,check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
 def init_db():
-    """Tạo bảng nếu CHƯA tồn tại. Không đụng tới dữ liệu cũ (an toàn để gọi nhiều lần)."""
-    conn = sqlite3.connect(DB_PATH)
+    """Tạo bảng nếu CHƯA tồn tại. Không đụng tới dữ liệu cũ (an toàn để gọi nhiều lần).
+
+    Production hardening: bảo đảm thư mục chứa SQLite tồn tại để có thể trỏ
+    MARKETSIM_DB_PATH sang Render Persistent Disk (vd. /var/data/marketsim.db).
+    """
+    db_path = os.path.abspath(str(DB_PATH))
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.DatabaseError:
+        pass
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scenarios (
@@ -156,6 +181,33 @@ def init_db():
         cols = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
         if col not in cols:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
+
+    # ------------------------------------------------------------------------
+    # TENANT OWNERSHIP HARDENING
+    # Direct company_id columns make tenant boundaries explicit on root records.
+    # Child tables remain linked through upload_id/scenario_id to avoid duplicating
+    # ownership in every row. This is additive and does not change AI logic.
+    # ------------------------------------------------------------------------
+    for table, col, sql_type in [
+        ("uploaded_datasets", "company_id", "INTEGER"),
+        ("learning_audit", "company_id", "INTEGER"),
+        ("scenarios", "company_id", "INTEGER"),
+    ]:
+        cols = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
+
+    # If multi-company schema has already been initialized, safely backfill tenant
+    # ownership from users.company_id. NULL stays NULL when legacy ownership is unknown.
+    user_cols = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    if "company_id" in user_cols:
+        cursor.execute("""UPDATE uploaded_datasets SET company_id=(SELECT company_id FROM users WHERE users.id=uploaded_datasets.user_id) WHERE company_id IS NULL AND user_id IS NOT NULL""")
+        cursor.execute("""UPDATE learning_audit SET company_id=(SELECT company_id FROM users WHERE users.id=learning_audit.user_id) WHERE company_id IS NULL AND user_id IS NOT NULL""")
+        cursor.execute("""UPDATE scenarios SET company_id=(SELECT company_id FROM users WHERE users.id=scenarios.user_id) WHERE company_id IS NULL AND user_id IS NOT NULL""")
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_uploaded_tenant ON uploaded_datasets(company_id,user_id,id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_tenant ON learning_audit(company_id,user_id,upload_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_tenant ON scenarios(company_id,user_id,id)")
 
     # Full per-session learning details for the new AI Learning History UI.
     # Additive migration only; old audit rows remain valid and readable.
@@ -312,6 +364,12 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Tenant ownership for enterprise experiments.
+    for col, sql_type in [("user_id","INTEGER"),("company_id","INTEGER")]:
+        cols={row[1] for row in cursor.execute("PRAGMA table_info(advanced_experiments)").fetchall()}
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE advanced_experiments ADD COLUMN {col} {sql_type}")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_advanced_experiments_tenant ON advanced_experiments(company_id,user_id,id)")
 
     # ------------------------------------------------------------------------
     # CHAT MEMORY - lịch sử hội thoại bền vững theo từng tài khoản/doanh nghiệp.
@@ -346,10 +404,84 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    for col, sql_type in [("user_id","INTEGER"),("company_id","INTEGER")]:
+        cols={row[1] for row in cursor.execute("PRAGMA table_info(campaign_feedback)").fetchall()}
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE campaign_feedback ADD COLUMN {col} {sql_type}")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_tenant ON campaign_feedback(company_id,user_id,id)")
+
+    # Persistent metadata for long-running jobs. This does not replace the existing
+    # asyncio execution logic; it only preserves ownership/status across refreshes
+    # and lets a restarted server report an interrupted job instead of exposing or
+    # silently losing another user's in-memory task.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            job_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            company_id INTEGER,
+            job_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress REAL DEFAULT 0,
+            payload_json TEXT,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_background_jobs_tenant ON background_jobs(company_id,user_id,updated_at DESC)")
 
     conn.commit()
     conn.close()
 
+
+def _user_company_id(conn, user_id: int | None):
+    """Return company_id for a user when multi-company columns exist."""
+    if user_id is None:
+        return None
+    try:
+        cols={r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "company_id" not in cols:
+            return None
+        row=conn.execute("SELECT company_id FROM users WHERE id=?",(int(user_id),)).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+def user_owns_upload(user_id: int, upload_id: int) -> bool:
+    init_db(); conn=_connect()
+    try:
+        row=conn.execute("SELECT 1 FROM uploaded_datasets WHERE id=? AND user_id=?",(int(upload_id),int(user_id))).fetchone()
+        return bool(row)
+    finally:
+        conn.close()
+
+def user_owns_scenario(user_id: int, scenario_id: int) -> bool:
+    init_db(); conn=_connect()
+    try:
+        return bool(conn.execute("SELECT 1 FROM scenarios WHERE id=? AND user_id=?",(int(scenario_id),int(user_id))).fetchone())
+    finally:
+        conn.close()
+
+def user_owns_experiment(user_id: int, experiment_id: int) -> bool:
+    init_db(); conn=_connect()
+    try:
+        return bool(conn.execute("SELECT 1 FROM advanced_experiments WHERE id=? AND user_id=?",(int(experiment_id),int(user_id))).fetchone())
+    finally:
+        conn.close()
+
+def database_runtime_info() -> dict:
+    """Non-secret storage diagnostics for deployment checks."""
+    init_db()
+    path=os.path.abspath(str(DB_PATH)); directory=os.path.dirname(path)
+    return {
+        "engine":"sqlite",
+        "path":path,
+        "directory":directory,
+        "exists":os.path.exists(path),
+        "writable":os.access(directory or '.',os.W_OK),
+        "persistent_disk_ready":path.startswith('/var/data/') or bool(os.getenv('MARKETSIM_PERSISTENT_DISK','').lower() in {'1','true','yes','on'}),
+    }
 
 def save_canonical_customers(upload_id: int, records: list):
     """Lưu danh sách khách hàng ĐÃ CHUẨN HÓA (sau schema_mapper.apply_mapping()
@@ -358,7 +490,7 @@ def save_canonical_customers(upload_id: int, records: list):
     được clustering/persona đọc thấy (lặp lại đúng lỗi 'clean_customer_data'
     trước đây chỉ nằm trong session_state mà không ai đọc lại)."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     for r in records:
         cursor.execute(
@@ -390,7 +522,7 @@ def save_canonical_customers(upload_id: int, records: list):
 def load_canonical_customers(upload_id: int = None, limit: int = 5000, user_id: int | None = None, confirmed_only: bool = True) -> list:
     """Đọc canonical customers. Khi có user_id chỉ đọc dữ liệu thuộc tài khoản đó.
     Mặc định chỉ dùng dataset đã xác nhận AI Learning để làm knowledge base tích lũy."""
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     cols=["customer_id","age","gender","job","location","total_spending","pain_point","personality","interest_keywords","last_purchase_date","order_count","average_order_value","discount_usage","product_category","channel","device","acquisition_source","review_text","monthly_income","signup_date","return_count","website_visits_30d","email_open_rate","cart_abandon_rate","satisfaction_score","loyalty_tier","provenance_json"]
     select=", ".join("cc."+c for c in cols)
     sql=f"SELECT {select} FROM canonical_customers cc JOIN uploaded_datasets u ON u.id=cc.upload_id"
@@ -415,13 +547,14 @@ def save_learning_audit(upload_id: int, upload_name: str, audit_summary: dict, m
     """Lưu 1 bản ghi 'AI đã học được gì' cho 1 lần upload -- để người vận hành
     xem lại và xác nhận. Trả về id của bản ghi audit vừa lưu."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
+    company_id=_user_company_id(conn,user_id)
     cursor.execute(
         """INSERT INTO learning_audit
            (upload_id, upload_name, total_records, overall_real_data_pct,
-            field_coverage_json, mapping_json, missing_required_json, user_id, learning_details_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            field_coverage_json, mapping_json, missing_required_json, user_id, company_id, learning_details_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             upload_id,
             upload_name,
@@ -431,6 +564,7 @@ def save_learning_audit(upload_id: int, upload_name: str, audit_summary: dict, m
             json.dumps(mapping or [], ensure_ascii=False),
             json.dumps(missing_required or [], ensure_ascii=False),
             user_id,
+            company_id,
             json.dumps(audit_summary or {}, ensure_ascii=False, default=str),
         ),
     )
@@ -455,7 +589,7 @@ def _row_to_audit_dict(row) -> dict:
     }
 
 def get_learning_audit_by_upload(upload_id: int, user_id: int | None = None) -> dict:
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     sql=("SELECT id, upload_id, upload_name, total_records, overall_real_data_pct, "
          "field_coverage_json, mapping_json, missing_required_json, confirmed, confirmed_at, created_at, user_id, learning_details_json "
          "FROM learning_audit WHERE upload_id=?")
@@ -466,7 +600,7 @@ def get_learning_audit_by_upload(upload_id: int, user_id: int | None = None) -> 
     return _row_to_audit_dict(row) if row else None
 
 def get_all_learning_audits(limit: int = 50, user_id: int | None = None) -> list:
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     sql=("SELECT id, upload_id, upload_name, total_records, overall_real_data_pct, "
          "field_coverage_json, mapping_json, missing_required_json, confirmed, confirmed_at, created_at, user_id, learning_details_json "
          "FROM learning_audit")
@@ -481,7 +615,7 @@ def confirm_learning_audit(audit_id: int, user_id: int | None = None):
     """Người vận hành xác nhận đã xem & chấp nhận chất lượng dữ liệu AI học được
     cho 1 lần upload cụ thể."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     if user_id is None:
         cursor.execute("UPDATE learning_audit SET confirmed=1, confirmed_at=datetime('now') WHERE id=?", (audit_id,))
@@ -494,7 +628,7 @@ def confirm_learning_audit(audit_id: int, user_id: int | None = None):
 
 def get_ai_learning_history(user_id: int, limit: int = 200) -> list:
     """Return complete learning sessions owned by one account."""
-    init_db(); conn=sqlite3.connect(DB_PATH); conn.row_factory=sqlite3.Row
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
     rows=conn.execute("""
         SELECT a.id AS audit_id,a.upload_id,a.upload_name,a.total_records,a.overall_real_data_pct,
                a.confirmed,a.confirmed_at,a.created_at,a.learning_details_json,
@@ -527,7 +661,7 @@ def delete_ai_learning_dataset(user_id: int, upload_id: int) -> dict:
     Campaign/scenario/simulation history is deliberately preserved because it is a
     historical output, not a learning source. No other account can be affected.
     """
-    init_db(); conn=sqlite3.connect(DB_PATH); cur=conn.cursor()
+    init_db(); conn=_connect(); cur=conn.cursor()
     row=cur.execute("SELECT id,upload_name FROM uploaded_datasets WHERE id=? AND user_id=?",(upload_id,user_id)).fetchone()
     if not row:
         conn.close(); return {'deleted':False,'reason':'not_found'}
@@ -564,7 +698,7 @@ def create_user(email: str, password: str) -> int:
         raise ValueError("Mật khẩu phải có ít nhất 6 ký tự.")
 
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE email=?", (email,))
     if cur.fetchone():
@@ -591,7 +725,7 @@ def verify_user(email: str, password: str) -> bool:
         return False
 
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     cur.execute("SELECT password_hash, salt FROM users WHERE email=?", (email,))
     row = cur.fetchone()
@@ -605,21 +739,22 @@ def verify_user(email: str, password: str) -> bool:
 
 def save_uploaded_dataset(upload_name: str, records: list, columns: list, upload_source: str = "web_upload", user_id: int | None = None):
     """Lưu toàn bộ dữ liệu chuẩn hóa của dataset và gắn với tài khoản sở hữu."""
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     sample_texts=[r.get("text","") for r in (records[:20] if records else [])]
     sample_text=" | ".join([t for t in sample_texts if t])[:2000]
     # Giữ toàn bộ records trong bản ghi upload để phục vụ lịch sử/khôi phục;
     # canonical_customers đồng thời lưu từng khách hàng để truy vấn hiệu quả.
     raw_records_json=json.dumps(records, ensure_ascii=False, default=str)
+    company_id=_user_company_id(conn,user_id)
     cursor.execute(
-        "INSERT INTO uploaded_datasets (upload_name, upload_source, uploaded_at, record_count, columns, sample_text, raw_records_json, user_id) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?)",
-        (upload_name, upload_source, len(records), json.dumps(columns, ensure_ascii=False), sample_text, raw_records_json, user_id)
+        "INSERT INTO uploaded_datasets (upload_name, upload_source, uploaded_at, record_count, columns, sample_text, raw_records_json, user_id, company_id) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)",
+        (upload_name, upload_source, len(records), json.dumps(columns, ensure_ascii=False), sample_text, raw_records_json, user_id, company_id)
     )
     upload_id=cursor.lastrowid; conn.commit(); conn.close(); return upload_id
 
 def load_persisted_uploaded_records(max_records: int = 300, user_id: int | None = None) -> list:
     """Tải dữ liệu đã lưu của đúng tài khoản; chỉ lấy dataset đã được xác nhận AI Learning."""
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     sql=("SELECT u.raw_records_json FROM uploaded_datasets u "
          "JOIN learning_audit a ON a.upload_id=u.id AND a.confirmed=1 "
          "WHERE u.raw_records_json IS NOT NULL")
@@ -637,13 +772,13 @@ def load_persisted_uploaded_records(max_records: int = 300, user_id: int | None 
     return records
 
 def get_uploaded_dataset_count(user_id: int | None = None) -> int:
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     sql="SELECT COUNT(*) FROM uploaded_datasets"; params=[]
     if user_id is not None: sql += " WHERE user_id=?"; params.append(user_id)
     cursor.execute(sql, tuple(params)); count=cursor.fetchone()[0]; conn.close(); return count
 
 def get_user_dataset_history(user_id: int, limit: int = 50) -> list:
-    init_db(); conn=sqlite3.connect(DB_PATH); cursor=conn.cursor()
+    init_db(); conn=_connect(); cursor=conn.cursor()
     cursor.execute("""SELECT u.id,u.upload_name,u.uploaded_at,u.record_count,u.columns,
                            COALESCE(a.confirmed,0),COALESCE(a.overall_real_data_pct,0),
                            COALESCE(a.created_at,u.uploaded_at)
@@ -654,7 +789,7 @@ def get_user_dataset_history(user_id: int, limit: int = 50) -> list:
     return [{"id":r[0],"name":r[1],"uploaded_at":r[2],"records":r[3],"columns":json.loads(r[4]) if r[4] else [],"learning_confirmed":bool(r[5]),"real_data_pct":r[6],"learning_at":r[7]} for r in rows]
 
 def get_user_dataset_stats(user_id: int) -> dict:
-    init_db(); conn=sqlite3.connect(DB_PATH); c=conn.cursor()
+    init_db(); conn=_connect(); c=conn.cursor()
     c.execute("SELECT COUNT(*), COALESCE(SUM(record_count),0) FROM uploaded_datasets WHERE user_id=?",(user_id,)); datasets,total_rows=c.fetchone()
     c.execute("SELECT COUNT(*) FROM canonical_customers cc JOIN uploaded_datasets u ON u.id=cc.upload_id WHERE u.user_id=?",(user_id,)); canonical=c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM learning_audit WHERE user_id=? AND confirmed=1",(user_id,)); confirmed=c.fetchone()[0]
@@ -727,7 +862,7 @@ def save_learning_memory(upload_name: str, records: list, columns: list, upload_
     """Lưu bản tóm tắt bộ nhớ học dữ liệu của AI để UI hiển thị tiến độ học tập, không cần nén toàn bộ file."""
     init_db()
     summary = summarize_ai_learning(records, columns=columns)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO ai_learning_memory VALUES (NULL, ?, ?, datetime('now'), ?, ?, ?, ?, ?)",
@@ -749,7 +884,7 @@ def save_learning_memory(upload_name: str, records: list, columns: list, upload_
 def get_ai_learning_snapshot() -> dict:
     """Trả về snapshot bộ nhớ AI sau khi đã học đủ dữ liệu từ nhiều lần upload."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     cursor.execute("SELECT record_count, top_keywords, top_traits, summary_text FROM ai_learning_memory ORDER BY id DESC")
     rows = cursor.fetchall()
@@ -790,7 +925,7 @@ def save_customer_intelligence_features(features_df, upload_id: int = None):
     if features_df is None or getattr(features_df, "empty", True):
         return 0
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     saved = 0
     for _, row in features_df.iterrows():
@@ -832,24 +967,22 @@ def save_customer_intelligence_features(features_df, upload_id: int = None):
     return saved
 
 
-def get_customer_intelligence_features(upload_id: int = None, limit: int = 5000):
-    """Đọc feature đã lưu; trả về list dict để UI/analytics dùng tiếp."""
-    init_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    if upload_id is None:
-        rows = conn.execute(
-            "SELECT * FROM customer_intelligence_features ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM customer_intelligence_features WHERE upload_id=? ORDER BY id DESC LIMIT ?",
-            (upload_id, limit),
-        ).fetchall()
-    result = [dict(r) for r in rows]
-    conn.close()
-    return result
+def get_customer_intelligence_features(upload_id: int = None, limit: int = 5000, user_id: int | None = None):
+    """Đọc feature đã lưu; user_id bật tenant guard qua uploaded_datasets."""
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
+    params=[]
+    sql="SELECT f.* FROM customer_intelligence_features f"
+    if user_id is not None:
+        sql += " JOIN uploaded_datasets u ON u.id=f.upload_id"
+    where=[]
+    if upload_id is not None:
+        where.append("f.upload_id=?"); params.append(int(upload_id))
+    if user_id is not None:
+        where.append("u.user_id=?"); params.append(int(user_id))
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY f.id DESC LIMIT ?"; params.append(int(limit))
+    rows=conn.execute(sql,tuple(params)).fetchall(); conn.close()
+    return [dict(r) for r in rows]
 
 
 def save_customer_segments(segmented_df, profiles, upload_id=None, silhouette=None):
@@ -857,7 +990,7 @@ def save_customer_segments(segmented_df, profiles, upload_id=None, silhouette=No
     if segmented_df is None or getattr(segmented_df, "empty", True):
         return 0
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     saved = 0
     for _, row in segmented_df.iterrows():
@@ -882,7 +1015,7 @@ def save_segmentation_run(upload_id: int, segmentation_result: dict):
     """Persist one overall segmentation-quality snapshot for an upload."""
     if not segmentation_result or segmentation_result.get("status") != "ok":
         return None
-    init_db(); conn=sqlite3.connect(DB_PATH); cur=conn.cursor()
+    init_db(); conn=_connect(); cur=conn.cursor()
     quality=segmentation_result.get("quality") or {}
     cur.execute("DELETE FROM segmentation_runs WHERE upload_id=?", (upload_id,))
     cur.execute("""INSERT INTO segmentation_runs
@@ -895,9 +1028,14 @@ def save_segmentation_run(upload_id: int, segmentation_result: dict):
     rid=cur.lastrowid; conn.commit(); conn.close(); return rid
 
 
-def get_segmentation_run(upload_id: int):
-    init_db(); conn=sqlite3.connect(DB_PATH); conn.row_factory=sqlite3.Row
-    row=conn.execute("SELECT * FROM segmentation_runs WHERE upload_id=? ORDER BY id DESC LIMIT 1",(upload_id,)).fetchone(); conn.close()
+def get_segmentation_run(upload_id: int, user_id: int | None = None):
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
+    if user_id is None:
+        row=conn.execute("SELECT * FROM segmentation_runs WHERE upload_id=? ORDER BY id DESC LIMIT 1",(upload_id,)).fetchone()
+    else:
+        row=conn.execute("""SELECT r.* FROM segmentation_runs r JOIN uploaded_datasets u ON u.id=r.upload_id
+            WHERE r.upload_id=? AND u.user_id=? ORDER BY r.id DESC LIMIT 1""",(upload_id,int(user_id))).fetchone()
+    conn.close()
     if not row: return None
     d=dict(row)
     try: d["metrics"]=json.loads(d.pop("metrics_json") or "{}")
@@ -905,17 +1043,21 @@ def get_segmentation_run(upload_id: int):
     return d
 
 
-def get_customer_segments(upload_id=None, limit=5000):
-    init_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    if upload_id is None:
-        rows = conn.execute("SELECT * FROM customer_segments ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM customer_segments WHERE upload_id=? ORDER BY id DESC LIMIT ?", (upload_id, limit)).fetchall()
-    result = [dict(r) for r in rows]
-    conn.close()
-    return result
+def get_customer_segments(upload_id=None, limit=5000, user_id: int | None = None):
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
+    params=[]
+    sql="SELECT s.* FROM customer_segments s"
+    if user_id is not None:
+        sql += " JOIN uploaded_datasets u ON u.id=s.upload_id"
+    where=[]
+    if upload_id is not None:
+        where.append("s.upload_id=?"); params.append(int(upload_id))
+    if user_id is not None:
+        where.append("u.user_id=?"); params.append(int(user_id))
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY s.id DESC LIMIT ?"; params.append(int(limit))
+    rows=conn.execute(sql,tuple(params)).fetchall(); conn.close()
+    return [dict(r) for r in rows]
 
 
 def classify_purchase_intent(score, sentiment):
@@ -935,7 +1077,7 @@ def classify_purchase_intent(score, sentiment):
 def save_simulation(scenario, results, analysis, user_id=None):
     """Lưu chiến dịch và phản hồi theo tài khoản, giữ nguyên lịch sử cũ."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cursor = conn.cursor()
     strengths = str(analysis.get('strengths', '[]'))
     weaknesses = str(analysis.get('weaknesses', '[]'))
@@ -945,8 +1087,9 @@ def save_simulation(scenario, results, analysis, user_id=None):
     except (ValueError, TypeError):
         star_rating = 3
     star_rating = max(1, min(5, star_rating))
-    cursor.execute("INSERT INTO scenarios (scenario_text,strengths,weaknesses,summary,star_rating,user_id) VALUES (?,?,?,?,?,?)",
-                   (scenario, strengths, weaknesses, summary, star_rating, user_id))
+    company_id=_user_company_id(conn,user_id)
+    cursor.execute("INSERT INTO scenarios (scenario_text,strengths,weaknesses,summary,star_rating,user_id,company_id) VALUES (?,?,?,?,?,?,?)",
+                   (scenario, strengths, weaknesses, summary, star_rating, user_id, company_id))
     sid = cursor.lastrowid
     for r in results:
         fallback_name = f"User_{r.get('persona_id', 'AI')}"
@@ -1004,7 +1147,7 @@ def save_simulation(scenario, results, analysis, user_id=None):
 def get_all_scenarios(user_id=None):
     """Danh sách chiến dịch theo tài khoản nếu user_id được cung cấp."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     if user_id is None:
         cur.execute("SELECT id, scenario_text, star_rating FROM scenarios ORDER BY id DESC")
@@ -1016,7 +1159,7 @@ def get_all_scenarios(user_id=None):
 
 
 def get_scenario_by_id(sid, user_id=None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     if user_id is None:
         cur.execute("SELECT * FROM scenarios WHERE id=?", (sid,))
@@ -1031,7 +1174,7 @@ def get_results_by_scenario(sid, user_id=None) -> pd.DataFrame:
     # details_json is nullable for historical rows created before the detailed
     # simulation-feed upgrade. init_db() guarantees the column exists.
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     if user_id is None:
         df = pd.read_sql_query("SELECT persona_name, score, sentiment, reasoning, purchase_intent, details_json FROM simulation_results WHERE scenario_id=?", conn, params=(sid,))
     else:
@@ -1047,7 +1190,7 @@ def get_results_by_scenario(sid, user_id=None) -> pd.DataFrame:
 def get_user_campaign_overview(user_id: int) -> dict:
     """Tổng hợp dashboard chiến dịch theo tài khoản hiện tại."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     row = cur.execute("SELECT COUNT(*) FROM scenarios WHERE user_id=?", (user_id,)).fetchone()
     projects = int(row[0] or 0)
@@ -1086,7 +1229,7 @@ def get_user_campaign_overview(user_id: int) -> dict:
 def save_customer_personas(personas, upload_id=None):
     if not personas:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         for persona in personas:
             conn.execute(
@@ -1105,15 +1248,20 @@ def save_customer_personas(personas, upload_id=None):
         conn.close()
 
 
-def get_customer_personas(upload_id=None, limit=100):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def get_customer_personas(upload_id=None, limit=100, user_id: int | None = None):
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
     try:
-        if upload_id is None:
-            rows = conn.execute("SELECT * FROM customer_personas ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM customer_personas WHERE upload_id=? ORDER BY id DESC LIMIT ?", (upload_id, limit)).fetchall()
-        return [dict(r) for r in rows]
+        params=[]; sql="SELECT p.* FROM customer_personas p"
+        if user_id is not None:
+            sql += " JOIN uploaded_datasets u ON u.id=p.upload_id"
+        where=[]
+        if upload_id is not None:
+            where.append("p.upload_id=?"); params.append(int(upload_id))
+        if user_id is not None:
+            where.append("u.user_id=?"); params.append(int(user_id))
+        if where: sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY p.id DESC LIMIT ?"; params.append(int(limit))
+        return [dict(r) for r in conn.execute(sql,tuple(params)).fetchall()]
     finally:
         conn.close()
 
@@ -1123,7 +1271,7 @@ def save_synthetic_customer_twins(twins, upload_id=None):
     if not twins:
         return 0
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         saved = 0
         for twin in twins:
@@ -1144,45 +1292,102 @@ def save_synthetic_customer_twins(twins, upload_id=None):
         conn.close()
 
 
-def get_synthetic_customer_twins(upload_id=None, segment_id=None, limit=5000):
-    init_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def get_synthetic_customer_twins(upload_id=None, segment_id=None, limit=5000, user_id: int | None = None):
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
     try:
-        where, params = [], []
+        params=[]; sql="SELECT t.* FROM synthetic_customer_twins t"
+        if user_id is not None:
+            sql += " JOIN uploaded_datasets u ON u.id=t.upload_id"
+        where=[]
         if upload_id is not None:
-            where.append("upload_id=?"); params.append(upload_id)
+            where.append("t.upload_id=?"); params.append(int(upload_id))
         if segment_id is not None:
-            where.append("segment_id=?"); params.append(int(segment_id))
-        sql = "SELECT * FROM synthetic_customer_twins"
+            where.append("t.segment_id=?"); params.append(int(segment_id))
+        if user_id is not None:
+            where.append("u.user_id=?"); params.append(int(user_id))
         if where: sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY id DESC LIMIT ?"; params.append(int(limit))
-        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        sql += " ORDER BY t.id DESC LIMIT ?"; params.append(int(limit))
+        rows=[dict(r) for r in conn.execute(sql,tuple(params)).fetchall()]
         for r in rows:
-            try: r["twin"] = json.loads(r["twin_json"] or "{}")
-            except Exception: r["twin"] = {}
+            try: r["twin"]=json.loads(r["twin_json"] or "{}")
+            except Exception: r["twin"]={}
         return rows
     finally:
         conn.close()
 
 
-def save_advanced_experiment(experiment_type, campaign_text, summary, results, budget=0, model_version="heuristic_v1"):
-    init_db(); con=sqlite3.connect(DB_PATH); cur=con.cursor()
-    cur.execute("INSERT INTO advanced_experiments (experiment_type,campaign_text,population_size,conversion_rate,click_rate,purchase_intent,expected_revenue,budget,roi_index,model_version,result_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (experiment_type,campaign_text,int(summary.get("population",len(results))),summary.get("conversion_rate"),summary.get("click_rate"),summary.get("purchase_intent"),summary.get("expected_revenue"),budget,summary.get("roi_index"),model_version,json.dumps(summary,ensure_ascii=False)))
+def save_advanced_experiment(experiment_type, campaign_text, summary, results, budget=0, model_version="heuristic_v1", user_id=None, company_id=None):
+    init_db(); con=_connect(); cur=con.cursor()
+    if company_id is None:
+        company_id=_user_company_id(con,user_id)
+    cur.execute("INSERT INTO advanced_experiments (experiment_type,campaign_text,population_size,conversion_rate,click_rate,purchase_intent,expected_revenue,budget,roi_index,model_version,result_json,user_id,company_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (experiment_type,campaign_text,int(summary.get("population",len(results))),summary.get("conversion_rate"),summary.get("click_rate"),summary.get("purchase_intent"),summary.get("expected_revenue"),budget,summary.get("roi_index"),model_version,json.dumps(summary,ensure_ascii=False),user_id,company_id))
     eid=cur.lastrowid
     for r in results:
         cur.execute("INSERT INTO advanced_experiment_results (experiment_id,twin_id,segment_id,conversion_probability,click_probability,purchase_intent,expected_revenue,sentiment,score,result_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (eid,r.get("twin_id"),r.get("segment_id"),r.get("conversion_probability"),r.get("click_probability"),r.get("purchase_intent"),r.get("expected_revenue"),r.get("sentiment"),r.get("score"),json.dumps(r,ensure_ascii=False)))
     con.commit(); con.close(); return eid
 
-def get_advanced_experiments(limit=100):
-    init_db(); con=sqlite3.connect(DB_PATH); con.row_factory=sqlite3.Row
-    rows=[dict(r) for r in con.execute("SELECT * FROM advanced_experiments ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]; con.close(); return rows
+def get_advanced_experiments(limit=100, user_id=None, company_id=None):
+    init_db(); con=_connect(); con.row_factory=sqlite3.Row
+    sql="SELECT * FROM advanced_experiments"; params=[]; where=[]
+    if user_id is not None:
+        where.append("user_id=?"); params.append(int(user_id))
+    elif company_id is not None:
+        where.append("company_id=?"); params.append(int(company_id))
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"; params.append(int(limit))
+    rows=[dict(r) for r in con.execute(sql,tuple(params)).fetchall()]; con.close(); return rows
 
-def get_advanced_results(experiment_id):
-    init_db(); con=sqlite3.connect(DB_PATH); df=pd.read_sql_query("SELECT * FROM advanced_experiment_results WHERE experiment_id=?",con,params=(experiment_id,)); con.close(); return df
+def get_advanced_results(experiment_id, user_id=None, company_id=None):
+    init_db(); con=_connect()
+    if user_id is not None:
+        ok=con.execute("SELECT 1 FROM advanced_experiments WHERE id=? AND user_id=?",(int(experiment_id),int(user_id))).fetchone()
+    elif company_id is not None:
+        ok=con.execute("SELECT 1 FROM advanced_experiments WHERE id=? AND company_id=?",(int(experiment_id),int(company_id))).fetchone()
+    else:
+        ok=con.execute("SELECT 1 FROM advanced_experiments WHERE id=?",(int(experiment_id),)).fetchone()
+    if not ok:
+        con.close(); return pd.DataFrame()
+    df=pd.read_sql_query("SELECT * FROM advanced_experiment_results WHERE experiment_id=?",con,params=(experiment_id,)); con.close(); return df
 
+
+def create_background_job(job_id: str, user_id: int, company_id: int | None, job_type: str, payload: dict | None = None) -> str:
+    init_db(); con=_connect()
+    con.execute("""INSERT OR REPLACE INTO background_jobs
+        (job_id,user_id,company_id,job_type,status,progress,payload_json,result_json,error,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (str(job_id),int(user_id),company_id,str(job_type),'running',0,json.dumps(payload or {},ensure_ascii=False,default=str),None,None))
+    con.commit(); con.close(); return str(job_id)
+
+def update_background_job(job_id: str, user_id: int, status: str | None = None, progress: float | None = None, result: dict | list | None = None, error: str | None = None):
+    init_db(); con=_connect()
+    sets=["updated_at=CURRENT_TIMESTAMP"]; params=[]
+    if status is not None: sets.append("status=?"); params.append(str(status))
+    if progress is not None: sets.append("progress=?"); params.append(float(progress))
+    if result is not None: sets.append("result_json=?"); params.append(json.dumps(result,ensure_ascii=False,default=str))
+    if error is not None: sets.append("error=?"); params.append(str(error)[:4000])
+    params.extend([str(job_id),int(user_id)])
+    con.execute(f"UPDATE background_jobs SET {','.join(sets)} WHERE job_id=? AND user_id=?",tuple(params))
+    con.commit(); con.close()
+
+def get_background_job(job_id: str, user_id: int) -> dict | None:
+    init_db(); con=_connect(); con.row_factory=sqlite3.Row
+    row=con.execute("SELECT * FROM background_jobs WHERE job_id=? AND user_id=?",(str(job_id),int(user_id))).fetchone(); con.close()
+    if not row: return None
+    d=dict(row)
+    for key in ('payload_json','result_json'):
+        try: d[key[:-5]]=json.loads(d.get(key) or '{}') if d.get(key) else None
+        except Exception: d[key[:-5]]=None
+    return d
+
+def mark_interrupted_background_jobs():
+    """On process restart, unfinished asyncio tasks cannot still be running."""
+    init_db(); con=_connect()
+    con.execute("""UPDATE background_jobs SET status='interrupted',
+        error=COALESCE(error,'Tiến trình bị gián đoạn do server khởi động lại.'),
+        updated_at=CURRENT_TIMESTAMP WHERE status IN ('running','queued')""")
+    con.commit(); con.close()
 
 # ==============================================================================
 # CHAT MEMORY - persistent assistant conversation per user
@@ -1195,7 +1400,7 @@ def save_chat_message(user_id: int, role: str, content: str, provider: str | Non
     content = str(content or '').strip()
     if not content:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO chat_messages(user_id,company_id,role,content,provider) VALUES(?,?,?,?,?)",
@@ -1209,7 +1414,7 @@ def save_chat_message(user_id: int, role: str, content: str, provider: str | Non
 def get_chat_history(user_id: int, limit: int = 100, company_id: int | None = None) -> list:
     """Trả lịch sử theo thứ tự cũ -> mới. company_id là lớp cách ly bổ sung."""
     init_db(); limit=max(1,min(int(limit or 100),1000))
-    conn=sqlite3.connect(DB_PATH); conn.row_factory=sqlite3.Row; cur=conn.cursor()
+    conn=_connect(); conn.row_factory=sqlite3.Row; cur=conn.cursor()
     sql="SELECT id,user_id,company_id,role,content,provider,created_at FROM chat_messages WHERE user_id=?"
     params=[int(user_id)]
     if company_id is not None:
@@ -1220,7 +1425,7 @@ def get_chat_history(user_id: int, limit: int = 100, company_id: int | None = No
 
 
 def clear_chat_history(user_id: int, company_id: int | None = None) -> int:
-    init_db(); conn=sqlite3.connect(DB_PATH); cur=conn.cursor()
+    init_db(); conn=_connect(); cur=conn.cursor()
     if company_id is None:
         cur.execute("DELETE FROM chat_messages WHERE user_id=?",(int(user_id),))
     else:

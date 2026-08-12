@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import config
 from database import *
-from schema_mapper import _rule_based_match, CANONICAL_SCHEMA, REQUIRED_FIELDS, apply_mapping, missing_required_fields
+from schema_mapper import _rule_based_match, _normalize_column_name, CANONICAL_SCHEMA, REQUIRED_FIELDS, apply_mapping, missing_required_fields
 from data_preprocessor import AdvancedETLPipeline
 from customer_intelligence import build_customer_intelligence, summarize_customer_intelligence
 from hybrid_segmentation import hybrid_segment_customers
@@ -20,10 +20,11 @@ from .auth_db import init_auth, create_session, get_user, delete_session
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
     create_company_admin, bootstrap_code_valid, require_admin_account, get_admin_profile, regenerate_join_code,
     admin_overview, admin_staff, admin_employee_detail, admin_activity, set_employee_active,
-    record_activity, activity_name)
+    record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
 from .ai_provider import check_all, check_groq, check_ollama, chat
 from .ai_bridge import call_text
 from staged_data_workflow import inspect_dataframe, apply_learned_fields, build_audit
+from data_quality_engine import detect_possible_duplicates, sanitize_canonical, derive_real_features, data_drift
 
 BASE_DIR=Path(__file__).resolve().parent.parent; FRONTEND=BASE_DIR/'frontend'
 app=FastAPI(title='MarketSim AI',version='Final Cloud')
@@ -119,7 +120,10 @@ class OptBody(BaseModel): budget:float=0; discount_options:list[float]|None=None
 class FeedbackBody(BaseModel): experiment_id:int; predicted_conversion:float; actual_conversion:float; predicted_revenue:float|None=None; actual_revenue:float|None=None; notes:str=''
 
 @app.on_event('startup')
-def startup(): init_db(); init_auth(); init_admin_schema()
+def startup():
+    # Two-pass init keeps legacy SQLite migrations safe: admin schema adds users.company_id,
+    # then init_db backfills tenant ownership onto business records.
+    init_db(); init_auth(); init_admin_schema(); init_db(); mark_interrupted_background_jobs()
 
 def current_user(req):
     u=get_user(req.cookies.get(config.SESSION_COOKIE))
@@ -136,6 +140,34 @@ def current_admin(req):
     except PermissionError as e:
         raise HTTPException(403,str(e))
     return u
+
+
+def _job_register(store: dict, job_id: str, user: dict, job_type: str, initial: dict, payload: dict | None = None):
+    """Register an in-memory job plus durable ownership/status metadata."""
+    item=dict(initial or {})
+    item['user_id']=int(user['id'])
+    item['company_id']=user.get('company_id')
+    store[job_id]=item
+    create_background_job(job_id,int(user['id']),user.get('company_id'),job_type,payload or {})
+    return item
+
+def _job_owned(store: dict, job_id: str, user: dict):
+    """Never reveal another account's job by guessing UUID/path."""
+    item=store.get(job_id)
+    if item is not None:
+        if int(item.get('user_id') or -1) != int(user['id']):
+            raise HTTPException(404,'Không tìm thấy tiến trình.')
+        try:
+            update_background_job(job_id,user['id'],status=item.get('status'),progress=item.get('progress'),error=item.get('error'))
+        except Exception:
+            pass
+        return item
+    persisted=get_background_job(job_id,user['id'])
+    if not persisted:
+        raise HTTPException(404,'Không tìm thấy tiến trình.')
+    # After a server restart the execution task no longer exists, but the owner can
+    # still see the persisted state/interruption reason.
+    return persisted
 
 @app.middleware('http')
 async def audit_employee_actions(req:Request, call_next):
@@ -162,10 +194,22 @@ def records_df(user_id=None):
     rows=load_canonical_customers(limit=100000, user_id=user_id)
     return pd.DataFrame(rows)
 
-async def map_columns_two_layer(columns, raw_records, provider):
+async def map_columns_two_layer(columns, raw_records, provider, company_id=None):
     result=[]; used=set()
     unresolved=[]
     for col in columns:
+        memory=get_company_schema_mapping(company_id,col) if company_id else None
+        if memory and memory.get('canonical_field') in CANONICAL_SCHEMA and memory.get('canonical_field') not in used:
+            field=memory['canonical_field']; used.add(field)
+            result.append({'source_column':col,'canonical_field':field,'confidence':1.0,'confidence_display':'100%','reasoning':f"Doanh nghiệp đã xác nhận mapping này {int(memory.get('confirmation_count') or 1)} lần trước đó.",'source':'company_memory'})
+            continue
+        # Known PII/display columns and externally supplied proxy scores are not
+        # needed for MarketSim clustering. Skipping them avoids unnecessary LLM
+        # calls and prevents a proxy column from being mistaken for raw evidence.
+        norm=_normalize_column_name(col)
+        if norm in {'full_name','name','customer_name','phone','phone_number','mobile','email','email_address'} or norm.endswith('_proxy'):
+            result.append({'source_column':col,'canonical_field':'unmapped','confidence':1.0,'confidence_display':'100%','reasoning':'Cột nhận diện/điểm proxy được chủ động bỏ qua để không đưa PII hoặc chỉ số tính sẵn vào mô hình phân nhóm.','source':'safe_ignore'})
+            continue
         field,conf,reason=_rule_based_match(col)
         if field and field not in used:
             result.append({'source_column':col,'canonical_field':field,'confidence':conf,'confidence_display':f'{int(conf*100)}%','reasoning':reason,'source':'rule'}); used.add(field)
@@ -290,7 +334,12 @@ def admin_activity_api(req:Request,limit:int=200):
     u=current_admin(req); return json_safe({'items':admin_activity(u['id'],limit)})
 
 @app.get('/api/system/health')
-async def health(req:Request):current_user(req);return await check_all()
+async def health(req:Request):
+    current_user(req)
+    data=await check_all()
+    try: data['storage']=database_runtime_info()
+    except Exception as e: data['storage']={'engine':'sqlite','error':str(e)}
+    return data
 @app.post('/api/system/test/groq')
 async def tg(req:Request):current_user(req);return await check_groq()
 @app.post('/api/system/test/ollama')
@@ -324,7 +373,7 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
         df=df.loc[:, ~df.columns.duplicated()].copy()
         raw_records=df.to_dict('records')
         # Mapping hai lớp: rule trước, Groq chỉ xử lý cột chưa nhận diện.
-        mapping=await map_columns_two_layer(list(df.columns), raw_records, config.AI_PROVIDER)
+        mapping=await map_columns_two_layer(list(df.columns), raw_records, config.AI_PROVIDER, u.get('company_id'))
         mapping_config=[]
         for m in mapping:
             mapping_config.append({'Tên cột gốc':m['source_column'],'AI hiểu là':m['canonical_field'] if m.get('canonical_field') not in ('unmapped','unknown_column') else 'unmapped'})
@@ -336,12 +385,14 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
         save_canonical_customers(upload_id,safe_records)
         save_learning_audit(upload_id,filename,audit,mapping,audit.get('missing_required_fields',[]),user_id=u['id'])
         intelligence=build_customer_intelligence(safe_records); save_customer_intelligence_features(intelligence,upload_id)
-        seg=hybrid_segment_customers(intelligence,n_clusters=None,random_state=config.RANDOM_STATE) if len(intelligence)>=2 else {'data':intelligence,'labels':[],'profiles':{},'n_clusters':0,'silhouette':None}
-        labeled=seg.get('data',intelligence); profiles=seg.get('profiles',{})
-        if not labeled.empty and 'segment_id' in labeled.columns: save_customer_segments(labeled,profiles,upload_id,seg.get('silhouette'))
+        seg=hybrid_segment_customers(intelligence,n_clusters=None,random_state=config.RANDOM_STATE) if len(intelligence)>=2 else {'labeled_df':intelligence,'data':intelligence,'profiles':{},'n_clusters':0,'silhouette':None,'quality':{'score':0,'status':'LOW'}}
+        labeled=seg.get('labeled_df',seg.get('data',intelligence)); profiles=seg.get('profiles',{})
+        if not labeled.empty and 'segment_id' in labeled.columns:
+            save_customer_segments(labeled,profiles,upload_id,seg.get('silhouette'))
+            save_segmentation_run(upload_id,seg)
         personas=[]
         if personas: save_customer_personas(personas,upload_id)
-        latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'twins':[],'mapping':mapping,'audit':audit,'audit_id':get_learning_audit_by_upload(upload_id).get('id') if get_learning_audit_by_upload(upload_id) else None,'learning_confirmed':True}
+        latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[],'mapping':mapping,'audit':audit,'audit_id':get_learning_audit_by_upload(upload_id).get('id') if get_learning_audit_by_upload(upload_id) else None,'learning_confirmed':True}
         return json_safe({'ok':True,'summary':{'rows':len(safe_records),'columns':list(df.columns),'audit':audit,'mapping':mapping,'segmentation':{'n_clusters':seg.get('n_clusters',0),'silhouette':seg.get('silhouette')},'upload_id':upload_id}})
     except HTTPException:
         raise
@@ -373,10 +424,15 @@ async def staged_confirm_inspection(req:Request,session_id:str):
         return json_safe({'ok':True,'session_id':session_id,'mapping':st.get('mapping') or [],'already_confirmed':True})
     df=st['df']; records=df.head(100).where(pd.notna(df.head(100)),None).to_dict('records')
     try:
-        mapping=await map_columns_two_layer(list(df.columns),records,config.AI_PROVIDER)
+        mapping=await map_columns_two_layer(list(df.columns),records,config.AI_PROVIDER,u.get('company_id'))
         missing=missing_required_fields(mapping)
-        st['mapping']=mapping; st['inspection_confirmed']=True; st['missing_required']=missing
-        return json_safe({'ok':True,'session_id':session_id,'mapping':mapping,'missing_required_fields':missing,'message':'Đã xác nhận dữ liệu. AI mapping đã được chạy cho các cột chưa nhận diện.'})
+        duplicates=detect_possible_duplicates(df,mapping)
+        current_rows=apply_mapping(df.where(pd.notna(df),None).to_dict('records'),mapping)
+        current_canonical=pd.DataFrame(current_rows)
+        historical_rows=load_canonical_customers(limit=50000,user_id=u['id'],confirmed_only=True)
+        drift=data_drift(current_canonical,pd.DataFrame(historical_rows) if historical_rows else pd.DataFrame())
+        st['mapping']=mapping; st['inspection_confirmed']=True; st['missing_required']=missing; st['duplicates']=duplicates; st['drift']=drift
+        return json_safe({'ok':True,'session_id':session_id,'mapping':mapping,'missing_required_fields':missing,'duplicates':duplicates,'drift':drift,'message':'Đã xác nhận dữ liệu. Mapping hoàn thành; hệ thống cũng đã kiểm tra trùng lặp và độ lệch so với lịch sử.'})
     except Exception as e:
         raise HTTPException(400,'Không thể mapping dữ liệu: '+str(e))
 
@@ -386,6 +442,36 @@ def staged_inspection_status(req:Request,session_id:str):
     if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
     return json_safe({'session_id':session_id,'inspection':st['inspection'],'mapping':st.get('mapping'),'inspection_confirmed':st.get('inspection_confirmed',False),'learning_confirmed':st.get('learning_confirmed',False),'audit':st.get('audit'),'dataset_id':st.get('upload_id'),'audit_id':st.get('audit_id')})
 
+
+@app.put('/api/customers/inspect/{session_id}/mapping')
+def staged_update_mapping(req:Request,session_id:str,body:MappingBody):
+    # Human correction layer for schema mapping. Does not call AI.
+    u=current_user(req); st=staged_sessions.get(session_id)
+    if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
+    if not st.get('inspection_confirmed'): raise HTTPException(400,'Hãy xác nhận dữ liệu trước.')
+    allowed=set(CANONICAL_SCHEMA.keys())|{'unmapped'}; used=set(); cleaned=[]
+    source_cols=set(map(str,st['df'].columns))
+    for m in body.mappings or []:
+        src=str(m.get('source_column') or '').strip(); field=str(m.get('canonical_field') or 'unmapped').strip()
+        if src not in source_cols: continue
+        if field not in allowed: raise HTTPException(400,f'Trường chuẩn không hợp lệ: {field}')
+        if field!='unmapped' and field in used: raise HTTPException(400,f'Mỗi trường chuẩn chỉ được map một lần: {field}')
+        if field!='unmapped': used.add(field)
+        cleaned.append({'source_column':src,'canonical_field':field,'confidence':1.0 if field!='unmapped' else 0.0,'confidence_display':'100%' if field!='unmapped' else '0%','reasoning':'Người dùng đã xác nhận thủ công.','source':'human_confirmed'})
+    existing={m.get('source_column'):m for m in (st.get('mapping') or [])}
+    sent={m['source_column'] for m in cleaned}
+    for col in source_cols-sent:
+        m=existing.get(col)
+        if m: cleaned.append(m)
+    missing=missing_required_fields(cleaned)
+    df=st['df']; duplicates=detect_possible_duplicates(df,cleaned)
+    current_rows=apply_mapping(df.where(pd.notna(df),None).to_dict('records'),cleaned)
+    current_canonical=pd.DataFrame(current_rows)
+    historical_rows=load_canonical_customers(limit=50000,user_id=u['id'],confirmed_only=True)
+    drift=data_drift(current_canonical,pd.DataFrame(historical_rows) if historical_rows else pd.DataFrame())
+    st['mapping']=cleaned; st['missing_required']=missing; st['duplicates']=duplicates; st['drift']=drift
+    return json_safe({'ok':True,'mapping':cleaned,'missing_required_fields':missing,'duplicates':duplicates,'drift':drift,'message':'Đã lưu mapping bạn xác nhận. Bước này không gọi AI.'})
+
 @app.post('/api/customers/learning/start/{session_id}')
 async def staged_learning_start(req:Request,session_id:str):
     """Bước 3: AI học từ dữ liệu real sau khi preview đã được xác nhận."""
@@ -394,7 +480,7 @@ async def staged_learning_start(req:Request,session_id:str):
     if not st.get('inspection_confirmed') or not st.get('mapping'):
         raise HTTPException(400,'Hãy xác nhận bước đọc dữ liệu trước khi AI học.')
     jid=str(uuid.uuid4())
-    staged_learning_jobs[jid]={'status':'running','progress':0,'step':'Chuẩn bị dữ liệu','session_id':session_id,'error':None,'audit':None}
+    _job_register(staged_learning_jobs,jid,u,'ai_learning',{'status':'running','progress':0,'step':'Chuẩn bị dữ liệu','session_id':session_id,'error':None,'audit':None},{'session_id':session_id})
     async def worker():
         try:
             from schema_mapper import CANONICAL_SCHEMA
@@ -406,7 +492,11 @@ async def staged_learning_start(req:Request,session_id:str):
                 if field not in canonical_df.columns: canonical_df[field]=np.nan
                 if meta['type']=='numeric': canonical_df[field]=pd.to_numeric(canonical_df[field],errors='coerce')
                 else: canonical_df[field]=canonical_df[field].astype('object')
-            staged_learning_jobs[jid].update(progress=10,step='Phân tích dữ liệu real và dữ liệu đã xác nhận trước đó')
+            # Enterprise data foundation: invalid source values are quarantined as missing-invalid,
+            # and deterministic features derived from REAL fields are labeled DERIVED_REAL.
+            canonical_df,initial_provenance,invalid_summary=sanitize_canonical(canonical_df)
+            canonical_df,initial_provenance,derived_summary=derive_real_features(canonical_df,initial_provenance)
+            staged_learning_jobs[jid].update(progress=10,step='Phân tích dữ liệu real, dữ liệu dẫn xuất và dữ liệu đã xác nhận trước đó')
             # Knowledge base tích lũy: chỉ dùng dataset của đúng tài khoản và đã được
             # người dùng xác nhận ở các lần trước. Dataset hiện tại chưa xác nhận nên
             # không được tự đưa vào knowledge base của lần sau.
@@ -425,13 +515,21 @@ async def staged_learning_start(req:Request,session_id:str):
                 except Exception as e:
                     learning[field]={'field':field,'learned':False,'confidence':0,'strategy':'not_enough_evidence','evidence':f'AI không thể học trường này: {e}','candidate_values':[],'notes':''}
             staged_learning_jobs[jid].update(progress=70,step='Bổ sung các trường còn thiếu')
-            learned_df,provenance,filled=apply_learned_fields(canonical_df,learning)
+            learned_df,provenance,filled=apply_learned_fields(canonical_df,learning,initial_provenance=initial_provenance)
             audit=build_audit(canonical_df,learned_df,provenance,learning)
             audit['filled_counts']=filled
+            audit['invalid_source_summary']=invalid_summary
+            audit['derived_real_summary']=derived_summary
+            audit['data_quality']=st.get('inspection',{}).get('quality',{})
+            audit['duplicates']=st.get('duplicates',{})
+            audit['data_drift']=st.get('drift',{})
             audit['learning_provider']=config.AI_PROVIDER
             audit['learned_summary']=[x for x in audit.get('learned_fields',[]) if x.get('learned')]
             staged_learning_jobs[jid].update(progress=80,step='Lưu audit dữ liệu')
             safe_records=json_safe(learned_df.where(pd.notna(learned_df),None).to_dict('records'))
+            for _i,_rec in enumerate(safe_records):
+                if _i < len(provenance):
+                    _rec['_field_sources']={str(k):str(v) for k,v in provenance.iloc[_i].to_dict().items()}
             upload_id=save_uploaded_dataset(st['filename'],safe_records,list(learned_df.columns),'staged_web_upload',user_id=u['id'])
             save_canonical_customers(upload_id,safe_records)
             audit_id=save_learning_audit(upload_id,st['filename'],audit,mapping,audit.get('remaining_missing_fields',[]),user_id=u['id'])
@@ -439,22 +537,26 @@ async def staged_learning_start(req:Request,session_id:str):
             intelligence=build_customer_intelligence(safe_records); save_customer_intelligence_features(intelligence,upload_id)
             seg=hybrid_segment_customers(intelligence,n_clusters=None,random_state=config.RANDOM_STATE)
             labeled=seg.get('labeled_df',intelligence); profiles=seg.get('profiles',{})
-            if not labeled.empty and 'segment_id' in labeled.columns: save_customer_segments(labeled,profiles,upload_id,seg.get('silhouette'))
+            if not labeled.empty and 'segment_id' in labeled.columns:
+                save_customer_segments(labeled,profiles,upload_id,seg.get('silhouette'))
+                save_segmentation_run(upload_id,seg)
             personas=build_data_driven_personas(labeled,profiles) if not labeled.empty else []
             if personas: save_customer_personas(personas,upload_id)
-            st.update({'upload_id':upload_id,'audit_id':audit_id,'learned_records':safe_records,'audit':audit,'learning':learning,'df':labeled,'personas':personas,'profiles':profiles,'twins':[]})
+            st.update({'upload_id':upload_id,'audit_id':audit_id,'learned_records':safe_records,'audit':audit,'learning':learning,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[]})
             # This staged path deliberately requires explicit audit confirmation.
-            latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'twins':[],'mapping':mapping,'audit':audit,'audit_id':audit_id,'learning_confirmed':False,'staged_session_id':session_id}
+            latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[],'mapping':mapping,'audit':audit,'audit_id':audit_id,'learning_confirmed':False,'staged_session_id':session_id}
             staged_learning_jobs[jid].update(status='completed',progress=100,step='Hoàn thành — chờ người dùng xác nhận audit',audit=audit,audit_id=audit_id,dataset_id=upload_id,filled_counts=filled)
+            update_background_job(jid,u['id'],status='completed',progress=100,result={'audit_id':audit_id,'dataset_id':upload_id,'session_id':session_id})
         except Exception as e:
             staged_learning_jobs[jid].update(status='failed',error=str(e))
+            update_background_job(jid,u['id'],status='failed',progress=jobs[jid].get('progress',0),error=str(e))
+            update_background_job(jid,u['id'],status='failed',progress=staged_learning_jobs[jid].get('progress',0),error=str(e))
     asyncio.create_task(worker())
     return {'ok':True,'job_id':jid}
 
 @app.get('/api/customers/learning/status/{job_id}')
 def staged_learning_status(req:Request,job_id:str):
-    current_user(req); j=staged_learning_jobs.get(job_id)
-    if not j: raise HTTPException(404,'Không tìm thấy tiến trình AI Learning.')
+    u=current_user(req); j=_job_owned(staged_learning_jobs,job_id,u)
     return json_safe(j)
 
 @app.post('/api/customers/learning/confirm/{session_id}')
@@ -464,12 +566,13 @@ def staged_learning_confirm(req:Request,session_id:str):
     state=latest_state.get(u['id'],{})
     if not st or st.get('user_id')!=u['id']:
         if state.get('staged_session_id')==session_id and state.get('audit_id'):
-            st={'user_id':u['id'],'audit_id':state.get('audit_id'),'upload_id':state.get('upload_id'),'df':state.get('df'),'personas':state.get('personas',[]),'profiles':state.get('profiles',{}),'audit':state.get('audit')}
+            st={'user_id':u['id'],'audit_id':state.get('audit_id'),'upload_id':state.get('upload_id'),'df':state.get('df'),'personas':state.get('personas',[]),'profiles':state.get('profiles',{}),'segmentation_quality':state.get('segmentation_quality',{}),'audit':state.get('audit')}
         else:
             raise HTTPException(404,'Không tìm thấy phiên dữ liệu. Hãy mở lại dữ liệu khách hàng và kiểm tra trạng thái AI Learning.')
     if not st.get('audit_id') or not st.get('audit'): raise HTTPException(400,'AI Learning chưa hoàn thành.')
     confirm_learning_audit(st['audit_id'], user_id=u['id'])
-    state.update({'learning_confirmed':True,'audit_id':st['audit_id'],'upload_id':st.get('upload_id'),'df':st.get('df'),'personas':st.get('personas',[]),'profiles':st.get('profiles',{}),'twins':[],'staged_session_id':session_id,'audit':st.get('audit')})
+    save_company_schema_mappings(u.get('company_id'),u['id'],st.get('mapping') or state.get('mapping') or [])
+    state.update({'learning_confirmed':True,'audit_id':st['audit_id'],'upload_id':st.get('upload_id'),'df':st.get('df'),'personas':st.get('personas',[]),'profiles':st.get('profiles',{}),'segmentation_quality':st.get('segmentation_quality',state.get('segmentation_quality',{})),'twins':[],'staged_session_id':session_id,'audit':st.get('audit')})
     latest_state[u['id']]=state
     if session_id in staged_sessions: staged_sessions[session_id]['learning_confirmed']=True
     return {'ok':True,'confirmed':True,'session_id':session_id,'message':'Đã xác nhận chất lượng dữ liệu. Các bước Digital Twin và mô phỏng đã được mở.'}
@@ -480,6 +583,7 @@ def staged_learning_confirm_latest(req:Request):
     if not state.get('audit_id') or not state.get('audit'):
         raise HTTPException(400,'AI Learning chưa hoàn thành.')
     confirm_learning_audit(state['audit_id'], user_id=u['id'])
+    save_company_schema_mappings(u.get('company_id'),u['id'],state.get('mapping') or [])
     state['learning_confirmed']=True
     latest_state[u['id']]=state
     sid=state.get('staged_session_id')
@@ -519,12 +623,12 @@ def customer_dataset_history(req:Request):
 async def collect_trends(req:Request):
     current_user(req)
     try:
-        from data_collector import fetch_google_trends
-        trends=fetch_google_trends()
+        from data_collector import fetch_pytrends
+        trends=fetch_pytrends()
         rows=[] if trends is None or trends.empty else trends.to_dict('records')
-        return json_safe({'ok':True,'items':rows,'count':len(rows),'source':'Google Trends','message':('Đã lấy dữ liệu Google Trends.' if rows else 'Google Trends không trả dữ liệu. Có thể bị giới hạn truy cập hoặc từ khóa chưa có dữ liệu.')})
+        return json_safe({'ok':True,'items':rows,'count':len(rows),'source':'Pytrends','message':('Đã thu thập dữ liệu bằng Pytrends.' if rows else 'Pytrends chưa trả dữ liệu. Có thể nguồn đang giới hạn truy cập hoặc từ khóa chưa đủ dữ liệu.')})
     except Exception as e:
-        return {'ok':False,'items':[],'count':0,'source':'Google Trends','error':str(e)}
+        return {'ok':False,'items':[],'count':0,'source':'Pytrends','error':str(e)}
 
 @app.get('/api/trends')
 async def get_trends(req:Request):
@@ -535,13 +639,41 @@ def analysis(req:Request):
     u=current_user(req); st=latest_state.get(u['id'])
     if st and st.get('df') is not None:
         df=st['df']; intel=summarize_customer_intelligence(df); profiles=st.get('profiles',{}) or {}
-        return json_safe({'ok':True,'intelligence':intel,'segmentation':{'profiles':profiles,'count':len(df),'n_clusters':len(profiles)},'audit':st.get('audit',{}),'learning_confirmed':bool(st.get('learning_confirmed'))})
-    rows=load_canonical_customers(limit=5000, user_id=u['id']); df=build_customer_intelligence(rows) if rows else pd.DataFrame()
+        seg_quality=st.get('segmentation_quality') or {}
+        return json_safe({'ok':True,'intelligence':intel,'segmentation':{'profiles':profiles,'count':len(df),'n_clusters':len(profiles),'quality':seg_quality},'audit':st.get('audit',{}),'learning_confirmed':bool(st.get('learning_confirmed')),'upload_id':st.get('upload_id')})
+
+    # After server restart, rebuild deterministic Customer Intelligence from the
+    # latest confirmed dataset and read persisted segmentation quality.
+    history=[x for x in get_user_dataset_history(u['id'],50) if x.get('learning_confirmed')]
+    upload_id=history[0]['id'] if history else None
+    rows=load_canonical_customers(upload_id=upload_id,limit=5000,user_id=u['id'],confirmed_only=True) if upload_id else []
+    df=build_customer_intelligence(rows) if rows else pd.DataFrame()
     intel=summarize_customer_intelligence(df) if not df.empty else summarize_customer_intelligence(pd.DataFrame())
-    return json_safe({'ok':True,'intelligence':intel,'segmentation':{'profiles':{},'count':len(df),'n_clusters':0},'audit':{},'learning_confirmed':False})
+    run=get_segmentation_run(upload_id,user_id=u['id']) if upload_id else None
+    seg_quality=(run or {}).get('metrics',{}) if run else {}
+    seg_rows=get_customer_segments(upload_id=upload_id,limit=5000,user_id=u['id']) if upload_id else []
+    profiles={}
+    for r in seg_rows:
+        sid=int(r.get('segment_id') or 0)
+        if sid not in profiles:
+            try: profiles[sid]=json.loads(r.get('profile_json') or '{}')
+            except Exception: profiles[sid]={}
+    return json_safe({'ok':True,'intelligence':intel,'segmentation':{'profiles':profiles,'count':len(df),'n_clusters':len(profiles),'quality':seg_quality},'audit':{},'learning_confirmed':bool(upload_id),'upload_id':upload_id})
 
 @app.get('/api/segments')
-def segments(req:Request):current_user(req); return json_safe({'items':get_customer_segments(limit=1000)})
+def segments(req:Request):
+    u=current_user(req); st=latest_state.get(u['id'],{})
+    upload_id=st.get('upload_id')
+    if not upload_id:
+        history=[x for x in get_user_dataset_history(u['id'],50) if x.get('learning_confirmed')]
+        upload_id=history[0]['id'] if history else None
+    if not upload_id:
+        return json_safe({'items':[],'quality':{},'upload_id':None})
+    items=get_customer_segments(upload_id=upload_id,limit=5000,user_id=u['id'])
+    run=get_segmentation_run(upload_id,user_id=u['id'])
+    quality=st.get('segmentation_quality') or ((run or {}).get('metrics',{}) if run else {})
+    return json_safe({'items':items,'quality':quality,'upload_id':upload_id})
+
 @app.get('/api/audit')
 def audit(req:Request):
     u=current_user(req); return json_safe({'items':get_all_learning_audits(100, user_id=u['id'])})
@@ -578,7 +710,7 @@ async def generate_personas_start(req:Request,b:TwinBody):
         raise HTTPException(400,'Bạn cần xem và xác nhận báo cáo AI Learning trước khi tạo khách hàng ảo.')
     labeled=st['df']; segment_ids=sorted(labeled['segment_id'].dropna().astype(int).unique().tolist()) if 'segment_id' in labeled.columns else [0]
     total=len(segment_ids)*b.count_per_segment; jid=str(uuid.uuid4())
-    persona_jobs[jid]={'status':'running','progress':0,'created':0,'total':total,'error':None,'twins':[]}
+    _job_register(persona_jobs,jid,u,'digital_twin_generation',{'status':'running','progress':0,'created':0,'total':total,'error':None,'twins':[]},{'upload_id':st.get('upload_id'),'total':total})
     async def worker():
         try:
             all_twins=[]
@@ -588,14 +720,18 @@ async def generate_personas_start(req:Request,b:TwinBody):
                 await asyncio.sleep(0)
             st['twins']=all_twins; save_synthetic_customer_twins(all_twins,st['upload_id'])
             persona_jobs[jid].update(status='completed',progress=100,created=len(all_twins),twins=all_twins)
-        except Exception as e: persona_jobs[jid].update(status='failed',error=str(e))
+            update_background_job(jid,u['id'],status='completed',progress=100,result={'count':len(all_twins),'upload_id':st.get('upload_id')})
+        except Exception as e:
+            persona_jobs[jid].update(status='failed',error=str(e))
+            update_background_job(jid,u['id'],status='failed',progress=persona_jobs[jid].get('progress',0),error=str(e))
     asyncio.create_task(worker()); return {'ok':True,'job_id':jid,'total':total}
 @app.get('/api/personas/generate/{job_id}')
 def generate_personas_status(req:Request,job_id:str):
-    current_user(req); j=persona_jobs.get(job_id)
-    if not j: raise HTTPException(404,'Không tìm thấy tiến trình tạo khách hàng ảo.')
-    d={k:v for k,v in j.items() if k!='twins'}
-    if j['status']=='completed': d['count']=len(j['twins'])
+    u=current_user(req); j=_job_owned(persona_jobs,job_id,u)
+    d={k:v for k,v in j.items() if k not in ('twins','payload_json','result_json')}
+    if j.get('status')=='completed':
+        if 'twins' in j: d['count']=len(j.get('twins') or [])
+        elif isinstance(j.get('result'),dict): d['count']=j['result'].get('count',0)
     return json_safe(d)
 @app.post('/api/personas/generate')
 def generate_personas(req:Request,b:TwinBody):
@@ -610,7 +746,12 @@ def generate_personas(req:Request,b:TwinBody):
 def personas(req:Request,limit:int=5000):
     u=current_user(req); st=latest_state.get(u['id'])
     if st and st.get('twins'): return json_safe({'items':st['twins'][:max(1,min(limit,5000))]})
-    return json_safe({'items':get_synthetic_customer_twins(limit=max(1,min(limit,5000)))})
+    # Never fall back to a global twins query: resolve only this account's latest confirmed upload.
+    history=[x for x in get_user_dataset_history(u['id'],50) if x.get('learning_confirmed')]
+    upload_id=history[0]['id'] if history else None
+    if not upload_id: return json_safe({'items':[]})
+    rows=get_synthetic_customer_twins(upload_id=upload_id,limit=max(1,min(limit,5000)),user_id=u['id'])
+    return json_safe({'items':[r.get('twin') or r for r in rows]})
 
 @app.post('/api/simulations/start')
 async def start(req:Request,b:Sim):
@@ -621,7 +762,7 @@ async def start(req:Request,b:Sim):
     twins=st.get('twins') or generate_synthetic_twins(st['df'],twins_per_segment=max(1,b.count//max(1,st.get('seg_count',1) or 1))).get('twins',[])
     if not twins: raise HTTPException(400,'Không có khách hàng ảo để mô phỏng.')
     twins=twins[:b.count]; provider=(b.provider or config.AI_PROVIDER).lower(); jid=str(uuid.uuid4())
-    jobs[jid]={
+    _job_register(jobs,jid,u,'simulation',{
         'status':'running',
         'progress':0,
         'total':len(twins),
@@ -633,7 +774,7 @@ async def start(req:Request,b:Sim):
         'ai_success':0,
         'fallback_count':0,
         'ai_errors':[],
-    }
+    },{'campaign_name':b.name or b.campaign,'count':len(twins),'provider':provider,'upload_id':st.get('upload_id')})
     async def worker():
         try:
             # quantitative twin model first
@@ -660,7 +801,7 @@ async def start(req:Request,b:Sim):
                     )
                     try:
                         raw=await _simulation_ai_call(prompt,provider); a,c=raw.find('{'),raw.rfind('}'); rr=json.loads(raw[a:c+1])
-                        reaction={'score':max(1,min(10,int(rr.get('score',5)))),'sentiment':str(rr.get('sentiment','neutral')),'comment':str(rr.get('comment','')),'reason':str(rr.get('reason',''))}
+                        reaction={'score':max(1,min(10,int(rr.get('score',5)))),'sentiment':str(rr.get('sentiment','neutral')),'comment':str(rr.get('comment','')),'reason':str(rr.get('reason','')),'source':'ai'}
                         ai_ok=True
                         ai_error=None
                     except Exception as e:
@@ -671,7 +812,7 @@ async def start(req:Request,b:Sim):
                         twin_id=t.get('twin_id') or t.get('id') or f'index-{i}'
                         print(f'[SIMULATION AI ERROR] job={jid} provider={provider} twin={twin_id} error={ai_error}', flush=True)
                         base=model['results'].iloc[i] if i < len(model.get('results',[])) else {}
-                        reaction={'score':int(base.get('score',5)),'sentiment':base.get('sentiment','neutral'),'comment':'Phản ứng được ước lượng từ mô hình định lượng của digital twin.','reason':'Fallback khi AI không phản hồi.'}
+                        reaction={'score':int(base.get('score',5)),'sentiment':base.get('sentiment','neutral'),'comment':'Phản ứng được ước lượng từ mô hình định lượng của digital twin.','reason':'Fallback khi AI không phản hồi.','source':'quantitative_fallback'}
                     async with lock:
                         if ai_ok:
                             jobs[jid]['ai_success']+=1
@@ -689,8 +830,25 @@ async def start(req:Request,b:Sim):
                     results[i]={'persona':t,'reaction':reaction}
             await asyncio.gather(*(one(i,t) for i,t in enumerate(twins)))
             analysis={'summary':f'Mô phỏng {len(results)} khách hàng ảo bằng mô hình digital twin và phản hồi AI.','strengths':[],'weaknesses':[],'star_rating':3}
-            sid=save_simulation(b.name or b.campaign, [{'persona_name':x['persona'].get('twin_id'), 'score':x['reaction']['score'], 'sentiment':x['reaction']['sentiment'], 'reasoning':x['reaction']['comment']} for x in results], analysis, user_id=u['id'])
+            # Persist both the flat legacy fields and the full Digital Twin + reaction
+            # payload. The flat columns keep old reports compatible; details preserves
+            # the complete customer feed after refresh/reopen.
+            persisted_results=[]
+            for x in results:
+                persona=x.get('persona') or {}
+                reaction=x.get('reaction') or {}
+                persisted_results.append({
+                    'persona_name':persona.get('twin_id') or persona.get('name'),
+                    'score':reaction.get('score',5),
+                    'sentiment':reaction.get('sentiment','neutral'),
+                    'reasoning':reaction.get('comment') or reaction.get('reason') or '',
+                    'comment':reaction.get('comment') or '',
+                    'reason':reaction.get('reason') or '',
+                    'details':{'persona':persona,'reaction':reaction},
+                })
+            sid=save_simulation(b.name or b.campaign, persisted_results, analysis, user_id=u['id'])
             jobs[jid].update(status='completed',progress=100,results=json_safe(results),scenario_id=sid)
+            update_background_job(jid,u['id'],status='completed',progress=100,result={'scenario_id':sid,'results_count':len(results),'provider':provider})
             print(
                 f"[SIMULATION DIAGNOSTIC] job={jid} provider={provider} total={len(twins)} "
                 f"ai_success={jobs[jid]['ai_success']} fallback={jobs[jid]['fallback_count']}",
@@ -702,17 +860,44 @@ async def start(req:Request,b:Sim):
     asyncio.create_task(worker()); return {'ok':True,'job_id':jid,'count':len(twins)}
 @app.get('/api/simulations/{job_id}')
 def sim_status(req:Request,job_id:str):
-    current_user(req); j=jobs.get(job_id)
-    if not j: raise HTTPException(404,'Không tìm thấy tiến trình.')
-    d={k:v for k,v in j.items() if k!='results'}
-    if j['status']=='completed': d['results_count']=len(j['results']); d['results_preview']=j['results'][:100]
+    u=current_user(req); j=_job_owned(jobs,job_id,u)
+    d={k:v for k,v in j.items() if k not in ('results','payload_json','result_json')}
+    if j.get('status')=='completed':
+        if 'results' in j:
+            d['results_count']=len(j.get('results') or []); d['results_preview']=(j.get('results') or [])[:100]
+        elif isinstance(j.get('result'),dict):
+            d['results_count']=j['result'].get('results_count',0); d['scenario_id']=j['result'].get('scenario_id')
     return json_safe(d)
 @app.get('/api/simulations/{sid}/results')
 def sim_results(req:Request,sid:int):
     u=current_user(req)
     if get_scenario_by_id(sid,u['id']) is None:
         raise HTTPException(404,'Không tìm thấy chiến dịch.')
-    return json_safe({'items':get_results_by_scenario(sid,u['id']).to_dict('records')})
+
+    rows=get_results_by_scenario(sid,u['id']).to_dict('records')
+    items=[]
+    for row in rows:
+        raw_details=row.pop('details_json',None)
+        details=None
+        if raw_details:
+            try:
+                details=json.loads(raw_details) if isinstance(raw_details,str) else raw_details
+            except Exception:
+                details=None
+        if isinstance(details,dict):
+            persona=details.get('persona') if isinstance(details.get('persona'),dict) else {}
+            reaction=details.get('reaction') if isinstance(details.get('reaction'),dict) else {}
+            reaction=dict(reaction)
+            reaction.setdefault('score',row.get('score',5))
+            reaction.setdefault('sentiment',row.get('sentiment','neutral'))
+            reaction.setdefault('comment',row.get('reasoning') or '')
+            reaction.setdefault('reason',row.get('reasoning') or '')
+            reaction.setdefault('purchase_intent',row.get('purchase_intent'))
+            items.append({'persona':persona,'reaction':reaction,'persona_name':row.get('persona_name')})
+        else:
+            # Legacy simulations created before details_json still open normally.
+            items.append(row)
+    return json_safe({'items':items})
 @app.get('/api/scenarios')
 def scenarios(req:Request):
     u=current_user(req); return json_safe({'items':[{'id':r[0],'name':r[1],'rating':r[2]} for r in get_all_scenarios(u['id'])]})
@@ -742,25 +927,83 @@ def advanced_opt(req:Request,b:OptBody):
     if not twins:raise HTTPException(400,'Hãy tạo digital twin trước.')
     r=optimize_marketing(twins_to_dataframe(twins),b.budget,b.discount_options,b.channel_options); rows=r.get('candidates',pd.DataFrame()); return json_safe({'status':r['status'],'best':r.get('best'),'candidates':rows.head(100).to_dict('records') if not rows.empty else []})
 @app.get('/api/advanced/experiments')
-def advanced_experiments(req:Request):current_user(req);return json_safe({'items':get_advanced_experiments(100)})
+def advanced_experiments(req:Request):
+    u=current_user(req); return json_safe({'items':get_advanced_experiments(100,user_id=u['id'])})
 
 @app.post('/api/feedback')
 def feedback(req:Request,b:FeedbackBody):
-    current_user(req)
+    u=current_user(req)
+    if int(b.experiment_id or 0)>0 and not user_owns_experiment(u['id'],b.experiment_id):
+        raise HTTPException(404,'Không tìm thấy thử nghiệm thuộc tài khoản này.')
     from marketing_learning import record_outcome
-    metrics,cal=record_outcome(config.DB_PATH,b.experiment_id,b.predicted_conversion,b.actual_conversion,b.predicted_revenue,b.actual_revenue,b.notes)
+    metrics,cal=record_outcome(config.DB_PATH,b.experiment_id,b.predicted_conversion,b.actual_conversion,b.predicted_revenue,b.actual_revenue,b.notes,user_id=u['id'],company_id=u.get('company_id'))
     return {'ok':True,'metrics':metrics,'calibration':cal}
 @app.get('/api/feedback')
 def feedback_list(req:Request):
-    current_user(req); from marketing_learning import feedback_history,latest_calibration
-    return json_safe({'items':feedback_history(config.DB_PATH,100).to_dict('records'),'calibration':latest_calibration(config.DB_PATH)})
+    u=current_user(req); from marketing_learning import feedback_history,latest_calibration
+    return json_safe({'items':feedback_history(config.DB_PATH,100,user_id=u['id']).to_dict('records'),'calibration':latest_calibration(config.DB_PATH,user_id=u['id'])})
+
+# Chat memory transport only: keeps conversation context per account without changing
+# AI Learning, Digital Twin, segmentation, or simulation algorithms.
+_CHAT_CONTEXT_MESSAGES = 24
+_CHAT_MESSAGE_CHAR_LIMIT = 1400
+
+
+def _compact_chat_context(items: list[dict]) -> list[dict]:
+    """Keep a token-conscious recent window while preserving message order."""
+    compact=[]
+    for item in (items or [])[-_CHAT_CONTEXT_MESSAGES:]:
+        role=str(item.get('role') or '').lower()
+        if role not in ('user','assistant'):
+            continue
+        content=str(item.get('content') or '').strip()
+        if not content:
+            continue
+        if len(content)>_CHAT_MESSAGE_CHAR_LIMIT:
+            content=content[-_CHAT_MESSAGE_CHAR_LIMIT:]
+        compact.append({'role':role,'content':content})
+    return compact
+
+
+@app.get('/api/chat/history')
+def assistant_history(req:Request, limit:int=200):
+    u=current_user(req)
+    items=get_chat_history(u['id'],limit=max(1,min(limit,500)),company_id=u.get('company_id'))
+    return json_safe({'ok':True,'items':items,'count':len(items)})
+
+
+@app.delete('/api/chat/history')
+def assistant_clear_history(req:Request):
+    u=current_user(req)
+    deleted=clear_chat_history(u['id'],company_id=u.get('company_id'))
+    return {'ok':True,'deleted':deleted}
+
 
 @app.post('/api/chat')
 async def assistant(req:Request,b:Chat):
-    current_user(req)
-    context='Bạn là trợ lý MarketSim AI. Giải thích bằng tiếng Việt dễ hiểu. Dữ liệu khách hàng thật chỉ được xử lý cục bộ; chỉ thảo luận dữ liệu tổng hợp sau lọc. Không khẳng định dự đoán là sự thật.'
-    try:return {'ok':True,'provider':b.provider or config.AI_PROVIDER,'answer':await chat([{'role':'system','content':context},{'role':'user','content':b.message}],b.provider or config.AI_PROVIDER)}
-    except Exception as e:raise HTTPException(502,str(e))
+    u=current_user(req)
+    provider=b.provider or config.AI_PROVIDER
+    message=str(b.message or '').strip()
+    if not message:
+        raise HTTPException(400,'Tin nhắn không được để trống.')
+    context=(
+        'Bạn là trợ lý MarketSim AI. Trả lời bằng tiếng Việt rõ ràng, tự nhiên. '
+        'Bạn được cung cấp lịch sử hội thoại gần đây của đúng tài khoản này: hãy dùng nó để hiểu '
+        'các đại từ, yêu cầu tiếp nối và những gì người dùng vừa nói ở các lượt trước; không hỏi lại '
+        'thông tin đã có trong lịch sử nếu không cần thiết. Nếu lịch sử không chứa thông tin thì nói rõ, '
+        'không tự bịa. Dữ liệu khách hàng thật chỉ được xử lý cục bộ; chỉ thảo luận dữ liệu tổng hợp '
+        'sau lọc. Không khẳng định dự đoán mô phỏng là sự thật.'
+    )
+    # Persist user message first so history survives refresh/server restart.
+    save_chat_message(u['id'],'user',message,provider,u.get('company_id'))
+    history=get_chat_history(u['id'],limit=_CHAT_CONTEXT_MESSAGES,company_id=u.get('company_id'))
+    messages=[{'role':'system','content':context}]+_compact_chat_context(history)
+    try:
+        answer=await chat(messages,provider)
+        save_chat_message(u['id'],'assistant',answer,provider,u.get('company_id'))
+        return {'ok':True,'provider':provider,'answer':answer,'memory_messages':len(messages)-1}
+    except Exception as e:
+        raise HTTPException(502,str(e))
 @app.get('/api/help')
 def help_content(req:Request):
     current_user(req); return {'sections':[
