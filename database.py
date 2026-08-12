@@ -78,6 +78,9 @@ def init_db():
     for table, column, definition in [
         ("scenarios", "user_id", "INTEGER"),
         ("simulation_results", "purchase_intent", "TEXT"),
+        # Additive persistence for the complete Digital Twin + reaction payload.
+        # Old rows remain valid; details_json is nullable.
+        ("simulation_results", "details_json", "TEXT"),
     ]:
         cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
         if column not in cols:
@@ -958,8 +961,41 @@ def save_simulation(scenario, results, analysis, user_id=None):
             sentiment = 'neutral'
         reasoning = str(r.get('reasoning', 'Khách hàng không để lại bình luận chi tiết.'))
         intent = str(r.get('purchase_intent') or classify_purchase_intent(score, sentiment))
-        cursor.execute("INSERT INTO simulation_results (scenario_id,persona_name,score,sentiment,reasoning,purchase_intent) VALUES (?,?,?,?,?,?)",
-                       (sid, persona_name, score, sentiment, reasoning, intent))
+
+        # Preserve the complete customer-feed payload so reopening a finished
+        # simulation does not lose Digital Twin attributes. This is additive and
+        # backward-compatible with legacy flat rows.
+        details = r.get('details')
+        if not isinstance(details, dict):
+            persona = r.get('persona') if isinstance(r.get('persona'), dict) else None
+            reaction = r.get('reaction') if isinstance(r.get('reaction'), dict) else None
+            if persona is not None or reaction is not None:
+                details = {
+                    'persona': persona or {},
+                    'reaction': reaction or {},
+                }
+        details_json = None
+        if isinstance(details, dict):
+            details = dict(details)
+            persona_detail = details.get('persona') if isinstance(details.get('persona'), dict) else {}
+            reaction_detail = details.get('reaction') if isinstance(details.get('reaction'), dict) else {}
+            reaction_detail = dict(reaction_detail)
+            reaction_detail.setdefault('score', score)
+            reaction_detail.setdefault('sentiment', sentiment)
+            reaction_detail.setdefault('comment', str(r.get('comment') or reasoning))
+            reaction_detail.setdefault('reason', str(r.get('reason') or reasoning))
+            reaction_detail.setdefault('purchase_intent', intent)
+            details['persona'] = persona_detail
+            details['reaction'] = reaction_detail
+            try:
+                details_json = json.dumps(details, ensure_ascii=False, default=str)
+            except Exception:
+                details_json = None
+
+        cursor.execute(
+            "INSERT INTO simulation_results (scenario_id,persona_name,score,sentiment,reasoning,purchase_intent,details_json) VALUES (?,?,?,?,?,?,?)",
+            (sid, persona_name, score, sentiment, reasoning, intent, details_json),
+        )
     conn.commit()
     conn.close()
     return sid
@@ -992,12 +1028,15 @@ def get_scenario_by_id(sid, user_id=None):
 
 
 def get_results_by_scenario(sid, user_id=None) -> pd.DataFrame:
+    # details_json is nullable for historical rows created before the detailed
+    # simulation-feed upgrade. init_db() guarantees the column exists.
+    init_db()
     conn = sqlite3.connect(DB_PATH)
     if user_id is None:
-        df = pd.read_sql_query("SELECT persona_name, score, sentiment, reasoning, purchase_intent FROM simulation_results WHERE scenario_id=?", conn, params=(sid,))
+        df = pd.read_sql_query("SELECT persona_name, score, sentiment, reasoning, purchase_intent, details_json FROM simulation_results WHERE scenario_id=?", conn, params=(sid,))
     else:
         df = pd.read_sql_query("""
-            SELECT r.persona_name, r.score, r.sentiment, r.reasoning, r.purchase_intent
+            SELECT r.persona_name, r.score, r.sentiment, r.reasoning, r.purchase_intent, r.details_json
             FROM simulation_results r JOIN scenarios s ON s.id=r.scenario_id
             WHERE r.scenario_id=? AND s.user_id=?
         """, conn, params=(sid, user_id))
