@@ -388,6 +388,25 @@ def init_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id ON chat_messages(user_id, id DESC)")
 
+    # Long-term conversation memory. This stores only small, explicit facts the user
+    # has stated (for example a preferred name or a note they explicitly asked the
+    # assistant to remember). It is separate from the raw chat history so a long
+    # conversation can still keep important context without resending every message.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            company_id INTEGER,
+            memory_key TEXT NOT NULL,
+            memory_value TEXT NOT NULL,
+            source_message_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_memory_user ON chat_memory(user_id, company_id, updated_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_memory_key ON chat_memory(user_id, company_id, memory_key)")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS campaign_feedback (
             id INTEGER PRIMARY KEY,
@@ -1430,4 +1449,78 @@ def clear_chat_history(user_id: int, company_id: int | None = None) -> int:
         cur.execute("DELETE FROM chat_messages WHERE user_id=?",(int(user_id),))
     else:
         cur.execute("DELETE FROM chat_messages WHERE user_id=? AND (company_id=? OR company_id IS NULL)",(int(user_id),int(company_id)))
+    deleted=int(cur.rowcount or 0); conn.commit(); conn.close(); return deleted
+
+
+def upsert_chat_memory(
+    user_id: int,
+    memory_key: str,
+    memory_value: str,
+    company_id: int | None = None,
+    source_message_id: int | None = None,
+) -> int:
+    """Save/update one explicit long-term chat memory for the current account.
+
+    This function does not call an LLM and does not infer hidden personal traits.
+    It only persists a value that the conversation layer has identified as
+    explicitly stated by the user.
+    """
+    init_db()
+    key=str(memory_key or '').strip()
+    value=str(memory_value or '').strip()
+    if not key or not value:
+        return 0
+    conn=_connect(); conn.row_factory=sqlite3.Row; cur=conn.cursor()
+    if company_id is None:
+        row=cur.execute(
+            "SELECT id FROM chat_memory WHERE user_id=? AND company_id IS NULL AND memory_key=? ORDER BY id DESC LIMIT 1",
+            (int(user_id),key),
+        ).fetchone()
+    else:
+        row=cur.execute(
+            "SELECT id FROM chat_memory WHERE user_id=? AND company_id=? AND memory_key=? ORDER BY id DESC LIMIT 1",
+            (int(user_id),int(company_id),key),
+        ).fetchone()
+    if row:
+        memory_id=int(row["id"])
+        cur.execute(
+            "UPDATE chat_memory SET memory_value=?, source_message_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (value,source_message_id,memory_id),
+        )
+    else:
+        cur.execute(
+            "INSERT INTO chat_memory(user_id,company_id,memory_key,memory_value,source_message_id) VALUES(?,?,?,?,?)",
+            (int(user_id),company_id,key,value,source_message_id),
+        )
+        memory_id=int(cur.lastrowid)
+    conn.commit(); conn.close()
+    return memory_id
+
+
+def get_chat_memories(user_id: int, company_id: int | None = None, limit: int = 50) -> list:
+    """Return long-term memories for only this account/company."""
+    init_db(); limit=max(1,min(int(limit or 50),200))
+    conn=_connect(); conn.row_factory=sqlite3.Row; cur=conn.cursor()
+    sql="SELECT id,user_id,company_id,memory_key,memory_value,source_message_id,created_at,updated_at FROM chat_memory WHERE user_id=?"
+    params=[int(user_id)]
+    if company_id is None:
+        sql += " AND company_id IS NULL"
+    else:
+        # NULL is allowed for legacy rows created before company membership existed.
+        sql += " AND (company_id=? OR company_id IS NULL)"; params.append(int(company_id))
+    sql += " ORDER BY updated_at DESC,id DESC LIMIT ?"; params.append(limit)
+    rows=cur.execute(sql,tuple(params)).fetchall(); conn.close()
+    return [dict(r) for r in rows]
+
+
+def clear_chat_memory(user_id: int, company_id: int | None = None) -> int:
+    """Delete only the current account's long-term chat memory."""
+    init_db(); conn=_connect(); cur=conn.cursor()
+    if company_id is None:
+        cur.execute("DELETE FROM chat_memory WHERE user_id=?",(int(user_id),))
+    else:
+        cur.execute(
+            "DELETE FROM chat_memory WHERE user_id=? AND (company_id=? OR company_id IS NULL)",
+            (int(user_id),int(company_id)),
+        )
     deleted=int(cur.rowcount or 0); conn.commit(); conn.close(); return deleted

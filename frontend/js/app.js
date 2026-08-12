@@ -1,4 +1,4 @@
-let currentJob=null,latestResults=[];const titles={overview:'Tổng quan',customers:'Dữ liệu khách hàng',analysis:'Phân tích',segments:'Phân nhóm',personas:'Khách hàng đại diện',campaign:'Chiến dịch',simulation:'Mô phỏng',assistant:'Trợ lý',reports:'Báo cáo',system:'Hệ thống',advanced:'A/B & Tối ưu','learning-history':'Lịch sử học AI',help:'Hướng dẫn'};async function api(u,o={}){let r=await fetch(u,o),d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||d.error||`HTTP ${r.status}`);return d}function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}function toast(t){let x=document.querySelector('#toast');x.textContent=t;x.classList.add('show');setTimeout(()=>x.classList.remove('show'),2500)}function showTab(id){document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelector('#'+id).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.tab===id));document.querySelector('#pageTitle').textContent=titles[id];history.replaceState(null,'','#'+id);if(id==='customers'){loadCustomers();loadStagedState();loadDatasetHistory();}if(id==='analysis')loadAnalysis();if(id==='segments')loadSegments();if(id==='personas')loadAllPersonas();if(id==='assistant')loadChatHistory();if(id==='learning-history')loadLearningHistory();if(id==='help')loadHelp();if(id==='reports')loadReports()}window.showTab=showTab;document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));document.querySelector('#logout').onclick=async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/'};async function init(){try{let m=await api('/api/auth/me');document.querySelector('#userEmail').textContent=m.email}catch{location.href='/';return}await refreshStats();await loadDatasetHistory();let t=location.hash.slice(1);if(titles[t])showTab(t)}async function refreshStats(){try{let d=await api('/api/overview');let p=d.purchase_intent||{},s=d.sentiment||{};document.querySelector('#statDataset').textContent=d.latest_dataset?.name||'Chưa có';document.querySelector('#statCustomers').textContent=(d.customers_saved||0).toLocaleString();document.querySelector('#statSavedCustomers').textContent=(d.customers_saved||0).toLocaleString();document.querySelector('#statScenarios').textContent=d.projects||0;document.querySelector('#statResponses').textContent=(d.responses||0).toLocaleString();document.querySelector('#statDataConfidence').textContent=(d.data_confidence_pct??0)+'%';document.querySelector('#statDatasets').textContent=d.datasets||0;document.querySelector('#statProvider').textContent=document.querySelector('#provider')?.value==='ollama'?'Ollama':'Groq';document.querySelector('#statBuy').textContent=(p.buy?.pct??0)+'%';document.querySelector('#statHesitate').textContent=(p.hesitate?.pct??0)+'%';document.querySelector('#statNotBuy').textContent=(p.not_buy?.pct??0)+'%';document.querySelector('#statBuyCount').textContent=(p.buy?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statHesitateCount').textContent=(p.hesitate?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statNotBuyCount').textContent=(p.not_buy?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statPositive').textContent=(s.positive?.pct??0)+'%';document.querySelector('#statNeutral').textContent=(s.neutral?.pct??0)+'%';document.querySelector('#statNegative').textContent=(s.negative?.pct??0)+'%';document.querySelector('#statAvgScore').textContent='Điểm trung bình: '+(d.avg_score??0)+'/10';document.querySelector('#overviewLatest').textContent=d.latest_campaign?.name||'Chưa có';document.querySelector('#overviewLatestDetail').textContent=d.latest_campaign?`Đánh giá ${d.latest_campaign.rating??'—'}/5 · ${d.responses||0} phản hồi trong toàn bộ lịch sử dự án.`:'Chưa có dự án mô phỏng.'}catch(e){toast('Không thể tải tổng quan: '+e.message)}}async function loadDatasetHistory(){try{let d=await api('/api/customers/datasets');let st=d.stats||{};document.querySelector('#datasetStats').textContent=`${st.datasets||0} file · ${(st.canonical_customers||0).toLocaleString()} khách hàng đã lưu`;document.querySelector('#datasetHistory').innerHTML=(d.items||[]).map(x=>`<div class="dataset-history-item"><div><b>${esc(x.name)}</b><span>${Number(x.records||0).toLocaleString()} bản ghi · ${esc(x.uploaded_at||'')}</span></div><span class="status ${x.learning_confirmed?'ready':'wait'}">${x.learning_confirmed?'Đã xác nhận':'Chờ xác nhận'}</span></div>`).join('')||'<div class="empty">Chưa có dataset nào được lưu cho tài khoản này.</div>'}catch(e){let x=document.querySelector('#datasetStats');if(x)x.textContent='Không tải được lịch sử'}}
+let currentJob=null,latestResults=[];const titles={overview:'Tổng quan',customers:'Dữ liệu khách hàng',analysis:'Phân tích',segments:'Phân nhóm',personas:'Khách hàng đại diện',campaign:'Chiến dịch',simulation:'Mô phỏng',assistant:'Trợ lý',reports:'Báo cáo',system:'Hệ thống',advanced:'A/B & Tối ưu','learning-history':'Lịch sử AI phân tích',help:'Hướng dẫn'};async function api(u,o={}){let r=await fetch(u,o),d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||d.error||`HTTP ${r.status}`);return d}function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}function toast(t){let x=document.querySelector('#toast');x.textContent=t;x.classList.add('show');setTimeout(()=>x.classList.remove('show'),2500)}function showTab(id){document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelector('#'+id).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.tab===id));document.querySelector('#pageTitle').textContent=titles[id];history.replaceState(null,'','#'+id);if(id==='customers'){loadCustomers();loadStagedState();loadDatasetHistory();}if(id==='analysis')loadAnalysis();if(id==='segments')loadSegments();if(id==='personas')loadAllPersonas();if(id==='assistant')loadChatHistory();if(id==='learning-history')loadLearningHistory();if(id==='help')loadHelp();if(id==='reports')loadReports()}window.showTab=showTab;document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));document.querySelector('#logout').onclick=async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/'};async function init(){try{let m=await api('/api/auth/me');document.querySelector('#userEmail').textContent=m.email}catch{location.href='/';return}await refreshStats();await loadDatasetHistory();let t=location.hash.slice(1);if(titles[t])showTab(t)}async function refreshStats(){try{let d=await api('/api/overview');let p=d.purchase_intent||{},s=d.sentiment||{};document.querySelector('#statDataset').textContent=d.latest_dataset?.name||'Chưa có';document.querySelector('#statCustomers').textContent=(d.customers_saved||0).toLocaleString();document.querySelector('#statSavedCustomers').textContent=(d.customers_saved||0).toLocaleString();document.querySelector('#statScenarios').textContent=d.projects||0;document.querySelector('#statResponses').textContent=(d.responses||0).toLocaleString();document.querySelector('#statDataConfidence').textContent=(d.data_confidence_pct??0)+'%';document.querySelector('#statDatasets').textContent=d.datasets||0;document.querySelector('#statProvider').textContent=document.querySelector('#provider')?.value==='ollama'?'Ollama':'Groq';document.querySelector('#statBuy').textContent=(p.buy?.pct??0)+'%';document.querySelector('#statHesitate').textContent=(p.hesitate?.pct??0)+'%';document.querySelector('#statNotBuy').textContent=(p.not_buy?.pct??0)+'%';document.querySelector('#statBuyCount').textContent=(p.buy?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statHesitateCount').textContent=(p.hesitate?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statNotBuyCount').textContent=(p.not_buy?.count||0).toLocaleString()+' khách hàng';document.querySelector('#statPositive').textContent=(s.positive?.pct??0)+'%';document.querySelector('#statNeutral').textContent=(s.neutral?.pct??0)+'%';document.querySelector('#statNegative').textContent=(s.negative?.pct??0)+'%';document.querySelector('#statAvgScore').textContent='Điểm trung bình: '+(d.avg_score??0)+'/10';document.querySelector('#overviewLatest').textContent=d.latest_campaign?.name||'Chưa có';document.querySelector('#overviewLatestDetail').textContent=d.latest_campaign?`Đánh giá ${d.latest_campaign.rating??'—'}/5 · ${d.responses||0} phản hồi trong toàn bộ lịch sử dự án.`:'Chưa có dự án mô phỏng.'}catch(e){toast('Không thể tải tổng quan: '+e.message)}}async function loadDatasetHistory(){try{let d=await api('/api/customers/datasets');let st=d.stats||{};document.querySelector('#datasetStats').textContent=`${st.datasets||0} file · ${(st.canonical_customers||0).toLocaleString()} khách hàng đã lưu`;document.querySelector('#datasetHistory').innerHTML=(d.items||[]).map(x=>`<div class="dataset-history-item"><div><b>${esc(x.name)}</b><span>${Number(x.records||0).toLocaleString()} bản ghi · ${esc(x.uploaded_at||'')}</span></div><span class="status ${x.learning_confirmed?'ready':'wait'}">${x.learning_confirmed?'Đã xác nhận':'Chờ xác nhận'}</span></div>`).join('')||'<div class="empty">Chưa có dataset nào được lưu cho tài khoản này.</div>'}catch(e){let x=document.querySelector('#datasetStats');if(x)x.textContent='Không tải được lịch sử'}}
 async function loadCustomers(){try{let d=await api('/api/customers?limit=100'),b=document.querySelector('#customerTable tbody');b.innerHTML='';d.items.forEach(x=>{let r=x.row;b.innerHTML+=`<tr><td>${esc(r.customer_id)}</td><td>${esc(r.age)}</td><td>${esc(r.location)}</td><td>${esc(r.job)}</td><td>${esc(r.segment_id??x.segment_id??'—')}</td><td>${esc(r.interest_keywords)}</td></tr>`});document.querySelector('#customerCount').textContent=d.items.length+' bản ghi hiển thị'}catch(e){toast(e.message)}}function renderAnalysis(s){let g=s.segmentation||{};document.querySelector('#analysisCards').innerHTML=`<div class="stat"><span>Số bản ghi</span><b>${(s.rows||0).toLocaleString()}</b></div><div class="stat"><span>Số cột</span><b>${(s.columns||[]).length}</b></div><div class="stat"><span>Số cụm</span><b>${g.n_clusters||0}</b></div><div class="stat"><span>Dữ liệu thật</span><b>${s.audit?.overall_real_data_pct??'—'}%</b></div>`}document.querySelector('#startSim').onclick=async()=>{let c=document.querySelector('#campaignText').value.trim(),n=document.querySelector('#campaignName').value.trim()||'Chiến dịch mô phỏng';if(!c){toast('Nhập nội dung chiến dịch trước.');return}try{let d=await api('/api/simulations/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({campaign:c,name:n,count:+document.querySelector('#personaCount').value,provider:document.querySelector('#provider').value})});currentJob=d.job_id;document.querySelector('#startMsg').textContent=`Đã tạo ${d.count} khách hàng ảo. Đang mô phỏng...`;document.querySelector('#startMsg').className='notice success';showTab('simulation');pollJob()}catch(e){document.querySelector('#startMsg').textContent=e.message;document.querySelector('#startMsg').className='notice error'}};async function pollJob(){if(!currentJob)return;try{let d=await api('/api/simulations/'+currentJob);document.querySelector('#progressBar').style.width=d.progress+'%';document.querySelector('#progressPercent').textContent=d.progress+'%';document.querySelector('#progressText').textContent=d.status==='completed'?'Đã hoàn thành':`Đang mô phỏng: ${d.progress}%`;document.querySelector('#progressDetail').textContent=d.status==='completed'?'Tất cả persona đã có phản hồi.':`Đã xử lý khoảng ${Math.round(d.progress*d.total/100)} / ${d.total} khách hàng ảo.`;if(d.status==='completed'){latestResults=d.results_preview||[];if(d.scenario_id){try{let all=await api('/api/simulations/'+d.scenario_id+'/results');renderResults(all.items||[])}catch{renderResults(latestResults)}}else{renderResults(latestResults)};loadAllPersonas();refreshStats();loadReports();return}if(d.status==='failed'){toast(d.error||'Mô phỏng thất bại');return}setTimeout(pollJob,500)}catch(e){toast(e.message)}}function renderResults(a){
   const count=document.querySelector('#resultCount');
   if(count)count.textContent=a.length+' phản hồi';
@@ -6,7 +6,7 @@ async function loadCustomers(){try{let d=await api('/api/customers?limit=100'),b
   if(!host)return;
   const pct=v=>{let n=Number(v);if(!Number.isFinite(n))return null;if(n<=1)n*=100;return Math.max(0,Math.min(100,Math.round(n)))+'%'};
   const intentLabel=v=>({buy:'Có xu hướng mua',hesitate:'Đang cân nhắc',not_buy:'Không có xu hướng mua'}[String(v||'').toLowerCase()]||v||'Chưa xác định');
-  const sourceLabel=v=>v==='ai'?'Phản hồi AI':v==='quantitative_fallback'?'Mô hình định lượng':'Phản hồi mô phỏng';
+  const sourceLabel=v=>v==='ai'?'Phản hồi AI':v==='quantitative_fallback'?'Kết quả dự phòng từ dữ liệu':'Phản hồi mô phỏng';
   host.innerHTML=a.map(x=>{
     let p=x.persona||{},r=x.reaction||x,px=p.proxy_scores||{};
     const hasProfile=Object.keys(p).length>0;
@@ -22,7 +22,7 @@ async function loadCustomers(){try{let d=await api('/api/customers?limit=100'),b
 
     let behavior=[];
     if(p.interest_keywords)behavior.push('<div><span>Sở thích</span><b>'+esc(p.interest_keywords)+'</b></div>');
-    if(p.pain_point)behavior.push('<div><span>Pain point</span><b>'+esc(p.pain_point)+'</b></div>');
+    if(p.pain_point)behavior.push('<div><span>Vấn đề / nhu cầu chính</span><b>'+esc(p.pain_point)+'</b></div>');
     if(p.personality)behavior.push('<div><span>Tính cách</span><b>'+esc(p.personality)+'</b></div>');
 
     let proxies=[];
@@ -36,7 +36,7 @@ async function loadCustomers(){try{let d=await api('/api/customers?limit=100'),b
     proxyPairs.forEach(([label,val])=>{let q=pct(val);if(q!==null)proxies.push(`<div><span>${label}</span><b>${q}</b></div>`)});
 
     let quality=[];
-    let conf=pct(p.confidence);if(conf!==null)quality.push('Độ tin cậy Twin '+conf);
+    let conf=pct(p.confidence);if(conf!==null)quality.push('Độ chắc chắn khách hàng ảo '+conf);
     let complete=pct(p.profile_completeness);if(complete!==null)quality.push('Hồ sơ '+complete+' đầy đủ');
     let rel=pct(p.source_data_reliability??p.data_reliability);if(rel!==null)quality.push('Độ tin cậy dữ liệu '+rel);
 
@@ -88,14 +88,19 @@ function renderChatHistory(items){
   l.innerHTML=items.map(m=>`<div class="chat-msg ${m.role==='user'?'user':'ai'}">${esc(m.content||'')}</div>`).join('');
   l.scrollTop=l.scrollHeight;
 }
+function updateChatMemoryStatus(count){
+  let el=document.querySelector('#chatMemoryStatus');if(!el)return;
+  count=Number(count||0);
+  el.textContent=count>0?`Đang ghi nhớ ${count} thông tin bạn đã nói rõ.`:'Chưa có thông tin được ghi nhớ lâu dài.';
+}
 async function loadChatHistory(){
-  try{let d=await api('/api/chat/history?limit=200');renderChatHistory(d.items||[])}
-  catch(e){toast('Không tải được lịch sử chat: '+e.message)}
+  try{let d=await api('/api/chat/history?limit=200');renderChatHistory(d.items||[]);updateChatMemoryStatus(d.memory_count||0)}
+  catch(e){toast('Không tải được lịch sử hội thoại: '+e.message)}
 }
 async function clearChatHistoryUI(){
-  if(!confirm('Xóa toàn bộ lịch sử hội thoại của tài khoản này?'))return;
-  try{await api('/api/chat/history',{method:'DELETE'});renderChatHistory([]);toast('Đã xóa lịch sử hội thoại')}
-  catch(e){toast('Không xóa được lịch sử chat: '+e.message)}
+  if(!confirm('Xóa toàn bộ hội thoại và những thông tin Trợ lý đã ghi nhớ từ cuộc trò chuyện này?'))return;
+  try{await api('/api/chat/history',{method:'DELETE'});renderChatHistory([]);updateChatMemoryStatus(0);toast('Đã xóa hội thoại và trí nhớ cuộc trò chuyện')}
+  catch(e){toast('Không xóa được lịch sử hội thoại: '+e.message)}
 }
 if(document.querySelector('#clearChat'))document.querySelector('#clearChat').onclick=clearChatHistoryUI;
 async function sendChat(){
@@ -103,7 +108,7 @@ async function sendChat(){
   let l=document.querySelector('#chatLog');l.innerHTML+=`<div class="chat-msg user">${esc(t)}</div>`;l.scrollTop=l.scrollHeight;
   try{
     let d=await api('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,provider:document.querySelector('#provider').value})});
-    l.innerHTML+=`<div class="chat-msg ai">${esc(d.answer)}</div>`;l.scrollTop=l.scrollHeight
+    l.innerHTML+=`<div class="chat-msg ai">${esc(d.answer)}</div>`;updateChatMemoryStatus(d.memory_count||0);l.scrollTop=l.scrollHeight
   }catch(e){l.innerHTML+=`<div class="chat-msg ai">Không thể gọi AI: ${esc(e.message)}</div>`;l.scrollTop=l.scrollHeight}
 }
 async function loadHelp(){try{let d=await api('/api/help');document.querySelector('#helpList').innerHTML=d.sections.map(x=>`<div class="help-item"><h3>${esc(x.title)}</h3><p>${esc(x.text)}</p></div>`).join('')}catch{}}
@@ -119,6 +124,8 @@ function el(id){ return document.getElementById(id); }
 function setHidden(id, hidden){ const x=el(id); if(x) x.classList.toggle('hidden', !!hidden); }
 function setNotice(id, message, type=''){ const x=el(id); if(!x) return; x.textContent=message||''; x.className='notice'+(type?' '+type:''); }
 const CANONICAL_FIELDS=['unmapped','customer_id','age','gender','job','location','total_spending','pain_point','personality','interest_keywords','last_purchase_date','order_count','average_order_value','discount_usage','product_category','channel','device','acquisition_source','review_text','monthly_income','signup_date','return_count','website_visits_30d','email_open_rate','cart_abandon_rate','satisfaction_score','loyalty_tier'];
+const FRIENDLY_FIELD_LABELS={unmapped:'Chưa xác định',customer_id:'Mã khách hàng',age:'Tuổi',gender:'Giới tính',job:'Nghề nghiệp',location:'Khu vực',total_spending:'Tổng chi tiêu',pain_point:'Vấn đề / nhu cầu chính',personality:'Đặc điểm hành vi',interest_keywords:'Sở thích / mối quan tâm',last_purchase_date:'Lần mua gần nhất',order_count:'Số đơn hàng',average_order_value:'Giá trị đơn hàng trung bình',discount_usage:'Mức sử dụng giảm giá',product_category:'Nhóm sản phẩm',channel:'Kênh mua hàng',device:'Thiết bị',acquisition_source:'Nguồn tiếp cận',review_text:'Nội dung đánh giá',monthly_income:'Thu nhập theo tháng',signup_date:'Ngày bắt đầu',return_count:'Số lần hoàn trả',website_visits_30d:'Lượt truy cập 30 ngày',email_open_rate:'Tỷ lệ mở email',cart_abandon_rate:'Tỷ lệ bỏ giỏ hàng',satisfaction_score:'Mức hài lòng',loyalty_tier:'Mức độ gắn bó'};
+const friendlyField=f=>FRIENDLY_FIELD_LABELS[f]||String(f||'').replaceAll('_',' ');
 let currentStagedMapping=[];
 function setWizardStep(step){
   for(let i=1;i<=5;i++){
@@ -168,13 +175,13 @@ function renderMapping(mapping, missingRequired=[], extras={}){
   setHidden('stagedMapping', false);
   const body=el('stagedMappingTable')?.querySelector('tbody');
   if(body) body.innerHTML=currentStagedMapping.map((m,i)=>{const ignored=m.source==='safe_ignore';const problem=!ignored&&(m.canonical_field==='unmapped'||Number(m.confidence||0)<.8);return `<tr class="${problem?'mapping-problem':''}">
-    <td>${esc(m.source_column)}</td><td><select class="mapping-select" data-index="${i}">${CANONICAL_FIELDS.map(f=>`<option value="${esc(f)}" ${f===(m.canonical_field||'unmapped')?'selected':''}>${esc(f==='unmapped'?'Chưa xác định':f)}</option>`).join('')}</select></td>
+    <td>${esc(m.source_column)}</td><td><select class="mapping-select" data-index="${i}">${CANONICAL_FIELDS.map(f=>`<option value="${esc(f)}" ${f===(m.canonical_field||'unmapped')?'selected':''}>${esc(friendlyField(f))}</option>`).join('')}</select></td>
     <td>${esc(m.confidence_display || Math.round(Number(m.confidence||0)*100)+'%')}</td>
     <td>${m.source==='company_memory'?'<span class="status ok">Đã nhớ</span>':m.source==='human_confirmed'?'<span class="status ok">Bạn xác nhận</span>':m.source==='safe_ignore'?'<span class="status">Bỏ qua an toàn</span>':esc(m.source||'—')}</td><td>${esc(m.reasoning||'')}</td>
   </tr>`}).join('');
   const mapped=new Set(currentStagedMapping.map(m=>m.canonical_field).filter(Boolean));
   const required=['age','job','pain_point','personality','interest_keywords'];
-  const grid=el('stagedRequiredGrid'); if(grid) grid.innerHTML=required.map(f=>{const missing=(missingRequired||[]).includes(f)||!mapped.has(f);return `<div class="required-item ${missing?'missing':'ready'}"><b>${esc(f)}</b><span>${missing?'Chưa đủ — AI chỉ học nếu có bằng chứng':'Đã có dữ liệu / mapping'}</span></div>`}).join('');
+  const grid=el('stagedRequiredGrid'); if(grid) grid.innerHTML=required.map(f=>{const missing=(missingRequired||[]).includes(f)||!mapped.has(f);return `<div class="required-item ${missing?'missing':'ready'}"><b>${esc(friendlyField(f))}</b><span>${missing?'Chưa đủ dữ liệu — AI chỉ bổ sung khi có căn cứ':'Đã có dữ liệu và đã hiểu đúng cột'}</span></div>`}).join('');
   const dup=extras.duplicates||{}; if(el('duplicateSummary')) el('duplicateSummary').innerHTML=`<b>${Number(dup.exact||0)}</b> dòng trùng hoàn toàn · <b>${Number(dup.possible||0)}</b> cặp có khả năng cùng khách hàng`;
   const drift=extras.drift||{}; if(el('driftSummary')) el('driftSummary').innerHTML=!drift.available?'Chưa có dữ liệu lịch sử để so sánh.':((drift.alerts||[]).length?`<b>${drift.alerts.length}</b> thay đổi phân phối cần xem: `+(drift.alerts||[]).slice(0,5).map(x=>esc(x.field)).join(', '):'✓ Phân phối dataset mới chưa có thay đổi lớn so với lịch sử.');
   const start=el('stagedStartLearning'); if(start) start.disabled=false;
@@ -189,7 +196,7 @@ async function saveManualMapping(){
     const d=await api(`/api/customers/inspect/${encodeURIComponent(stagedSessionId)}/mapping`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({mappings})});
     renderMapping(d.mapping||[],d.missing_required_fields||[],{duplicates:d.duplicates||{},drift:d.drift||{}}); setNotice('stagedMsg',d.message||'Đã lưu mapping.','success');
   }catch(e){setNotice('stagedMsg','Không thể lưu mapping: '+e.message,'error');}
-  finally{if(btn){btn.disabled=false;btn.textContent='Lưu chỉnh sửa mapping';}}
+  finally{if(btn){btn.disabled=false;btn.textContent='Lưu cách hiểu các cột';}}
 }
 
 function renderAudit(audit, confirmed=false){
@@ -203,12 +210,12 @@ function renderAudit(audit, confirmed=false){
   const body=el('stagedAuditTable')?.querySelector('tbody'),coverage=audit.field_coverage||{};
   if(body) body.innerHTML=Object.entries(coverage).map(([field,x])=>`<tr><td>${esc(field)}</td><td>${pct(x.real_pct)}%</td><td>${pct(x.derived_real_pct)}%</td><td>${pct(x.ai_inferred_pct)}%</td><td>${pct(x.missing_pct)}%</td><td>${x.invalid>0?'<span class="status bad">Nguồn lỗi</span>':(x.missing>0?'<span class="status wait">Còn thiếu</span>':(x.ai_inferred>0?'<span class="status ready">AI bổ sung</span>':'<span class="status ok">Dữ liệu gốc</span>'))}</td></tr>`).join('');
   const learned=el('stagedLearnedList'),items=audit.learned_fields||audit.learned_summary||[];
-  if(learned) learned.innerHTML=items.length?items.map(x=>`<div class="learned-item"><div><b>${esc(x.field)}</b><span class="status ${x.learned?'ready':'wait'}">${x.learned?'Đã học có bằng chứng':'AI nói: chưa biết'}</span></div><p>${esc(x.evidence||x.notes||'Không có bằng chứng bổ sung.')}</p><small>Confidence: ${Math.round(Number(x.confidence||0)*100)}% · ${esc(x.strategy||'—')}</small></div>`).join(''):'<div class="empty">Không có trường nào cần AI bổ sung.</div>';
+  if(learned) learned.innerHTML=items.length?items.map(x=>`<div class="learned-item"><div><b>${esc(x.field)}</b><span class="status ${x.learned?'ready':'wait'}">${x.learned?'Đã học có bằng chứng':'AI nói: chưa biết'}</span></div><p>${esc(x.evidence||x.notes||'Không có bằng chứng bổ sung.')}</p><small>Độ chắc chắn: ${Math.round(Number(x.confidence||0)*100)}%${x.strategy?` · Cách xử lý: ${esc(x.strategy)}`:''}</small></div>`).join(''):'<div class="empty">Không có trường nào cần AI bổ sung.</div>';
   if(el('readinessOverall')) el('readinessOverall').textContent=`${pct(ready.overall)}%`;
   if(el('readinessStatus')){el('readinessStatus').textContent=ready.status==='READY'?'Sẵn sàng':ready.status==='CAUTION'?'Cần cân nhắc':'Chưa khuyến nghị';el('readinessStatus').className='status '+(ready.status==='READY'?'ok':ready.status==='CAUTION'?'wait':'bad');}
   const areas=el('readinessAreas');if(areas)areas.innerHTML=Object.entries(ready.areas||{}).map(([n,v])=>`<div class="readiness-row"><span>${esc(n)}</span><div class="quality-meter"><i style="width:${Number(v)||0}%"></i></div><b>${pct(v)}%</b></div>`).join('');
   if(el('readinessMessage'))el('readinessMessage').textContent=ready.message||'';
-  if(el('stagedAuditExplain')) el('stagedAuditExplain').textContent=`REAL ${pct(audit.overall_real_data_pct)}% · DERIVED_REAL ${pct(audit.overall_derived_real_pct)}% · AI_INFERRED ${pct(audit.overall_ai_inferred_pct)}% · MISSING ${pct(audit.overall_missing_pct)}%. ${Number(audit.invalid_cells||0)} ô nguồn không hợp lệ đã được cách ly trước AI.`;
+  if(el('stagedAuditExplain')) el('stagedAuditExplain').textContent=`Dữ liệu gốc ${pct(audit.overall_real_data_pct)}% · Tính từ dữ liệu gốc ${pct(audit.overall_derived_real_pct)}% · AI bổ sung ${pct(audit.overall_ai_inferred_pct)}% · Còn thiếu ${pct(audit.overall_missing_pct)}%. ${Number(audit.invalid_cells||0)} ô không hợp lệ đã được tách riêng trước khi AI phân tích.`;
   const confirm=el('stagedConfirmLearning'); if(confirm){confirm.disabled=!!confirmed;confirm.textContent=confirmed?'Đã xác nhận dữ liệu':'5. Xác nhận & cho phép tạo Digital Twin';}
   if(el('auditReliability'))el('auditReliability').textContent=`Quality ${pct(quality.score||audit.overall_real_data_pct)} / 100`;
   if(el('auditDetail'))el('auditDetail').textContent=`Dữ liệu gốc ${pct(audit.overall_real_data_pct)}% · Dẫn xuất ${pct(audit.overall_derived_real_pct)}% · AI ${pct(audit.overall_ai_inferred_pct)}% · Thiếu ${pct(audit.overall_missing_pct)}%.`;
@@ -241,13 +248,13 @@ async function inspectSelectedDataset(){
 
 async function confirmInspectionAndMap(){
   if(!stagedSessionId){ setNotice('stagedMsg','Chưa có phiên dữ liệu. Hãy bấm Đọc & kiểm tra dữ liệu trước.','error'); return; }
-  const btn=el('stagedConfirmInspect'); if(btn){btn.disabled=true;btn.textContent='Đang mapping...';}
-  setNotice('stagedMsg','Đã xác nhận preview. Đang mapping cột theo rule, AI chỉ xử lý cột chưa nhận diện...','');
+  const btn=el('stagedConfirmInspect'); if(btn){btn.disabled=true;btn.textContent='Đang xác định ý nghĩa cột...';}
+  setNotice('stagedMsg','Đã xác nhận dữ liệu mẫu. Hệ thống đang xác định ý nghĩa từng cột; AI chỉ hỗ trợ các cột còn chưa rõ...','');
   try{
     const d=await api(`/api/customers/inspect/${encodeURIComponent(stagedSessionId)}/confirm`,{method:'POST'});
     renderMapping(d.mapping||[], d.missing_required_fields||[], {duplicates:d.duplicates||{},drift:d.drift||{}});
-    setNotice('stagedMsg',d.message||'Mapping hoàn thành.','success');
-  }catch(e){ setNotice('stagedMsg','Mapping thất bại: '+e.message,'error'); if(btn)btn.disabled=false; }
+    setNotice('stagedMsg',d.message||'Đã xác định xong ý nghĩa các cột.','success');
+  }catch(e){ setNotice('stagedMsg','Không thể xác định ý nghĩa các cột: '+e.message,'error'); if(btn)btn.disabled=false; }
   finally{ if(btn)btn.textContent='3. Xác nhận cột & tiếp tục'; }
 }
 
@@ -299,14 +306,15 @@ async function confirmStagedLearning(){
 
 const FIELD_LABELS={
   age:'Tuổi',gender:'Giới tính',job:'Nghề nghiệp',location:'Khu vực',total_spending:'Tổng chi tiêu',order_count:'Số đơn',
-  average_order_value:'AOV gốc',average_order_value_final:'Giá trị đơn TB',discount_usage:'Dùng khuyến mãi',last_purchase_date:'Lần mua gần nhất',
+  average_order_value:'Giá trị đơn hàng TB gốc',average_order_value_final:'Giá trị đơn hàng TB',discount_usage:'Dùng khuyến mãi',last_purchase_date:'Lần mua gần nhất',
   product_category:'Danh mục',channel:'Kênh ưu tiên',device:'Thiết bị',acquisition_source:'Nguồn tiếp cận',review_text:'Đánh giá',
   monthly_income:'Thu nhập/tháng',signup_date:'Ngày tham gia',return_count:'Số đơn hoàn',website_visits_30d:'Truy cập web 30 ngày',
   email_open_rate:'Tỷ lệ mở email',cart_abandon_rate:'Tỷ lệ bỏ giỏ',satisfaction_score:'Điểm hài lòng',loyalty_tier:'Hạng thành viên',
-  recency_days:'Recency (ngày)',purchase_frequency_per_month:'Tần suất mua/tháng',return_rate:'Tỷ lệ hoàn',discount_dependency:'Phụ thuộc khuyến mãi',
-  engagement_score:'Engagement Score',customer_value_score:'Customer Value Score',behavioral_loyalty_index:'Behavioral Loyalty',churn_signal_score:'Churn Signal'
+  recency_days:'Số ngày từ lần mua gần nhất',purchase_frequency_per_month:'Tần suất mua/tháng',return_rate:'Tỷ lệ hoàn',discount_dependency:'Mức phụ thuộc khuyến mãi',
+  engagement_score:'Mức tương tác',customer_value_score:'Giá trị khách hàng',behavioral_loyalty_index:'Mức độ gắn bó',churn_signal_score:'Nguy cơ rời bỏ'
 };
 function fieldLabel(k){return FIELD_LABELS[k]||String(k||'').replaceAll('_',' ')}
+function sourceLabelFriendly(k){return ({REAL:'Dữ liệu gốc',DERIVED_REAL:'Tính từ dữ liệu gốc',AI_INFERRED:'AI bổ sung',MISSING:'Còn thiếu',MISSING_SOURCE:'Nguồn không có',MISSING_INVALID:'Nguồn không hợp lệ',NOT_APPLICABLE:'Không áp dụng',original:'Dữ liệu gốc',ai_inferred:'AI bổ sung',default_fallback:'Giá trị dự phòng'})[String(k||'')]||String(k||'').replaceAll('_',' ')}
 function qualityTone(status){status=String(status||'').toUpperCase();return status==='READY'||status==='HIGH'?'good':status==='CAUTION'||status==='MEDIUM'?'warn':'bad'}
 function renderBarRow(label,value){let v=Math.max(0,Math.min(100,Number(value||0)));return `<div class="coverage-item"><div class="coverage-row"><span>${esc(label)}</span><b>${pct(v)}%</b></div><div class="mini-bar"><i style="width:${v}%"></i></div></div>`}
 function moneyCompact(v){if(v==null||Number.isNaN(Number(v)))return '—';let n=Number(v);if(Math.abs(n)>=1e9)return (n/1e9).toFixed(1)+' tỷ';if(Math.abs(n)>=1e6)return (n/1e6).toFixed(1)+' triệu';if(Math.abs(n)>=1e3)return Math.round(n/1e3).toLocaleString()+' nghìn';return Math.round(n).toLocaleString()}
@@ -318,29 +326,29 @@ async function loadAnalysis(){
     const hero=el('intelligenceQuality');
     if(hero){
       const tone=qualityTone(q.status);hero.className='quality-hero '+tone;
-      hero.innerHTML=`<div><span class="eyebrow">INTELLIGENCE READINESS</span><div class="quality-score">${pct(q.score||0)}<small>/100</small></div></div><div class="quality-copy"><h3>${q.status==='READY'?'Dữ liệu hành vi đủ tốt để phân nhóm':q.status==='CAUTION'?'Có thể phân tích nhưng còn vùng dữ liệu yếu':'Chưa nên phụ thuộc vào phân nhóm để ra quyết định'}</h3><p>${esc((q.warnings||[])[0]||'MarketSim ưu tiên dữ liệu thật và feature tính bằng công thức trước khi phân nhóm.')}</p></div>`;
+      hero.innerHTML=`<div><span class="eyebrow">MỨC SẴN SÀNG PHÂN TÍCH</span><div class="quality-score">${pct(q.score||0)}<small>/100</small></div></div><div class="quality-copy"><h3>${q.status==='READY'?'Dữ liệu hành vi đủ tốt để phân nhóm':q.status==='CAUTION'?'Có thể phân tích nhưng còn vùng dữ liệu yếu':'Chưa nên phụ thuộc vào phân nhóm để ra quyết định'}</h3><p>${esc((q.warnings||[])[0]||'MarketSim ưu tiên dữ liệu thật và các chỉ số tính bằng công thức trước khi phân nhóm.')}</p></div>`;
     }
     const cards=el('analysisCards');
     if(cards) cards.innerHTML=`
-      <div class="stat"><span>Khách hàng</span><b>${Number(i.customers||seg.count||0).toLocaleString()}</b><small>Dữ liệu canonical</small></div>
-      <div class="stat"><span>Độ tin cậy nguồn</span><b>${pct(i.avg_reliability_pct)}%</b><small>REAL / DERIVED_REAL được ưu tiên</small></div>
-      <div class="stat"><span>RFM đầy đủ</span><b>${pct(i.rfm_available_pct)}%</b><small>Recency + Frequency + Monetary</small></div>
-      <div class="stat"><span>Số phân khúc</span><b>${Number(seg.n_clusters||0)}</b><small>${seg.quality?.status?`Quality ${esc(seg.quality.status)}`:'Chưa đánh giá'}</small></div>`;
+      <div class="stat"><span>Khách hàng</span><b>${Number(i.customers||seg.count||0).toLocaleString()}</b><small>Dữ liệu đã kiểm tra</small></div>
+      <div class="stat"><span>Độ tin cậy nguồn</span><b>${pct(i.avg_reliability_pct)}%</b><small>Ưu tiên dữ liệu gốc và dữ liệu tính trực tiếp</small></div>
+      <div class="stat"><span>Đủ dữ liệu hành vi mua hàng</span><b>${pct(i.rfm_available_pct)}%</b><small>Lần mua gần nhất + số lần mua + tổng chi tiêu</small></div>
+      <div class="stat"><span>Số phân khúc</span><b>${Number(seg.n_clusters||0)}</b><small>${seg.quality?.status?`Chất lượng: ${esc(seg.quality.status)}`:'Chưa đánh giá'}</small></div>`;
 
     const kpi=el('analysisKpis');
     if(kpi) kpi.innerHTML=[
-      ['Median Recency',k.median_recency_days==null?'—':`${Math.round(k.median_recency_days)} ngày`],
-      ['Median số đơn',k.median_order_count==null?'—':Number(k.median_order_count).toFixed(1)],
-      ['Median tổng chi tiêu',moneyCompact(k.median_total_spending)],
-      ['Median AOV',moneyCompact(k.median_aov)],
-      ['Engagement TB',k.mean_engagement_score==null?'—':`${Math.round(Number(k.mean_engagement_score)*100)}%`],
-      ['Behavioral Loyalty TB',k.mean_loyalty_index==null?'—':`${Math.round(Number(k.mean_loyalty_index)*100)}%`],
-      ['High Value',Number(k.high_value_customers||0).toLocaleString()+' KH'],
-      ['Churn signal cao',Number(k.high_churn_signal_customers||0).toLocaleString()+' KH'],
+      ['Số ngày từ lần mua gần nhất (điển hình)',k.median_recency_days==null?'—':`${Math.round(k.median_recency_days)} ngày`],
+      ['Số đơn hàng điển hình',k.median_order_count==null?'—':Number(k.median_order_count).toFixed(1)],
+      ['Tổng chi tiêu điển hình',moneyCompact(k.median_total_spending)],
+      ['Giá trị đơn hàng TB điển hình',moneyCompact(k.median_aov)],
+      ['Mức tương tác trung bình',k.mean_engagement_score==null?'—':`${Math.round(Number(k.mean_engagement_score)*100)}%`],
+      ['Mức độ gắn bó trung bình',k.mean_loyalty_index==null?'—':`${Math.round(Number(k.mean_loyalty_index)*100)}%`],
+      ['Khách hàng giá trị cao',Number(k.high_value_customers||0).toLocaleString()+' KH'],
+      ['Nguy cơ rời bỏ cao',Number(k.high_churn_signal_customers||0).toLocaleString()+' KH'],
     ].map(([a,b])=>`<div class="metric-line"><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
 
     const sources=el('analysisSources');
-    if(sources) sources.innerHTML=Object.entries(i.source_breakdown||{}).sort((a,b)=>b[1]-a[1]).map(([name,v])=>renderBarRow(name.replaceAll('_',' '),v)).join('')||'<p class="muted">Dataset cũ chưa lưu provenance chi tiết.</p>';
+    if(sources) sources.innerHTML=Object.entries(i.source_breakdown||{}).sort((a,b)=>b[1]-a[1]).map(([name,v])=>renderBarRow(sourceLabelFriendly(name),v)).join('')||'<p class="muted">Bộ dữ liệu cũ chưa lưu chi tiết nguồn hình thành từng giá trị.</p>';
     const coverage=el('analysisCoverage');
     if(coverage) coverage.innerHTML=Object.entries(i.fields_with_data||{}).filter(([,v])=>Number(v)>0).sort((a,b)=>b[1]-a[1]).map(([k,v])=>renderBarRow(fieldLabel(k),v)).join('')||'<p class="muted">Chưa có dữ liệu để tính độ phủ.</p>';
     const derived=el('analysisDerived');
@@ -351,28 +359,28 @@ async function loadAnalysis(){
     if(warnings) warnings.innerHTML=(q.warnings||[]).map(x=>`<div class="quality-warning">${esc(x)}</div>`).join('')||'<div class="quality-ok">Không có cảnh báo Intelligence quan trọng.</div>';
     const cat=el('featureCatalog');
     if(cat) cat.innerHTML=Object.entries(i.feature_catalog||{}).map(([k,v])=>`<div class="feature-formula"><b>${esc(fieldLabel(k))}</b><span>${esc(v)}</span></div>`).join('');
-    if(msg){ msg.textContent=d.learning_confirmed?'Phân tích từ dataset đã xác nhận. Các chỉ số heuristic được ghi rõ là chỉ số, không phải xác suất thật.':'Phiên dữ liệu hiện tại chưa được xác nhận hoàn toàn.'; msg.className='notice '+(d.learning_confirmed?'success':''); }
-    if(Object.keys(audit).length && el('auditReliability')) el('auditReliability').textContent=`Real ${pct(audit.overall_real_data_pct)}%`;
+    if(msg){ msg.textContent=d.learning_confirmed?'Đang phân tích từ bộ dữ liệu đã xác nhận. Các điểm hành vi chỉ dùng để hỗ trợ so sánh, không phải xác suất mua hàng thực tế.':'Bộ dữ liệu hiện tại chưa được xác nhận hoàn toàn.'; msg.className='notice '+(d.learning_confirmed?'success':''); }
+    if(Object.keys(audit).length && el('auditReliability')) el('auditReliability').textContent=`Dữ liệu gốc ${pct(audit.overall_real_data_pct)}%`;
   }catch(e){ if(msg){msg.textContent='Không thể tải phân tích: '+e.message;msg.className='notice error';} }
 }
 
 function renderSegmentQuality(q){
   const hero=el('segmentQuality'), metrics=el('segmentQualityMetrics'), warnings=el('segmentWarnings'), features=el('segmentFeatureGroups'), candidates=el('segmentKCandidates');
   if(!q||!Object.keys(q).length){
-    if(hero){hero.className='quality-hero warn';hero.innerHTML='<div class="quality-copy"><h3>Dataset cũ chưa có Segmentation Quality</h3><p>Hãy chạy lại AI Learning với bản nâng cấp này để MarketSim lưu đầy đủ quality metrics.</p></div>';}
+    if(hero){hero.className='quality-hero warn';hero.innerHTML='<div class="quality-copy"><h3>Bộ dữ liệu cũ chưa có đánh giá chất lượng phân nhóm</h3><p>Hãy chạy lại bước AI phân tích dữ liệu để MarketSim lưu đầy đủ kết quả kiểm tra.</p></div>';}
     if(metrics)metrics.innerHTML='';if(warnings)warnings.innerHTML='';if(features)features.innerHTML='';if(candidates)candidates.innerHTML='';return;
   }
   const tone=qualityTone(q.status);
-  if(hero){hero.className='quality-hero '+tone;hero.innerHTML=`<div><span class="eyebrow">SEGMENTATION QUALITY</span><div class="quality-score">${pct(q.score||0)}<small>/100</small></div></div><div class="quality-copy"><h3>${esc(q.interpretation||'Đã đánh giá chất lượng phân nhóm')}</h3><p>Confidence trung bình từng khách hàng: <b>${pct(q.avg_customer_confidence||0)}%</b>. ${Number(q.low_confidence_customers||0).toLocaleString()} khách hàng có confidence rất thấp.</p></div>`;}
+  if(hero){hero.className='quality-hero '+tone;hero.innerHTML=`<div><span class="eyebrow">CHẤT LƯỢNG PHÂN NHÓM</span><div class="quality-score">${pct(q.score||0)}<small>/100</small></div></div><div class="quality-copy"><h3>${esc(q.interpretation||'Đã đánh giá chất lượng phân nhóm')}</h3><p>Độ chắc chắn trung bình của từng khách hàng: <b>${pct(q.avg_customer_confidence||0)}%</b>. ${Number(q.low_confidence_customers||0).toLocaleString()} khách hàng có độ chắc chắn rất thấp.</p></div>`;}
   if(metrics)metrics.innerHTML=`
-    <div class="stat"><span>Silhouette</span><b>${q.silhouette==null?'—':Number(q.silhouette).toFixed(3)}</b><small>Cao hơn = tách biệt hơn</small></div>
-    <div class="stat"><span>Stability</span><b>${q.stability==null?'—':pct(Number(q.stability)*100)+'%'}</b><small>Đổi seed vẫn giữ nhóm?</small></div>
-    <div class="stat"><span>Nhóm nhỏ nhất</span><b>${pct(q.balance?.min_pct||0)}%</b><small>Tránh cluster quá nhỏ</small></div>
-    <div class="stat"><span>Feature quality</span><b>${pct(q.feature_quality_avg||0)}%</b><small>${Number(q.selected_feature_count||0)} feature được dùng</small></div>`;
+    <div class="stat"><span>Mức tách biệt giữa các nhóm</span><b>${q.silhouette==null?'—':Number(q.silhouette).toFixed(3)}</b><small>Càng cao, các nhóm càng khác biệt rõ</small></div>
+    <div class="stat"><span>Độ ổn định khi chạy lại</span><b>${q.stability==null?'—':pct(Number(q.stability)*100)+'%'}</b><small>Chạy lại vẫn cho kết quả tương tự?</small></div>
+    <div class="stat"><span>Nhóm nhỏ nhất</span><b>${pct(q.balance?.min_pct||0)}%</b><small>Tránh tạo nhóm quá ít khách hàng</small></div>
+    <div class="stat"><span>Chất lượng thông tin phân nhóm</span><b>${pct(q.feature_quality_avg||0)}%</b><small>${Number(q.selected_feature_count||0)} thông tin được dùng</small></div>`;
   if(warnings)warnings.innerHTML=(q.warnings||[]).map(x=>`<div class="quality-warning">${esc(x)}</div>`).join('')||'<div class="quality-ok">Không phát hiện cảnh báo phân nhóm quan trọng.</div>';
   const selected=q.selected_features||{};
   if(features)features.innerHTML=['numeric','categorical','text'].map(type=>`<div class="feature-group"><b>${type==='numeric'?'Số liệu':type==='categorical'?'Phân loại':'Văn bản'}</b><div>${(selected[type]||[]).map(x=>`<span class="feature-chip">${esc(fieldLabel(x))}</span>`).join('')||'<span class="muted">Không dùng</span>'}</div></div>`).join('');
-  if(candidates)candidates.innerHTML=(q.k_candidates||[]).map(x=>`<div class="k-candidate"><b>k=${esc(x.k)}</b><span>Silhouette ${Number(x.silhouette||0).toFixed(3)}</span><small>Nhóm nhỏ nhất ${pct(x.balance?.min_pct||0)}%</small></div>`).join('')||'<p class="muted">k được người dùng chỉ định hoặc dataset quá nhỏ nên không có bảng so sánh auto-k.</p>';
+  if(candidates)candidates.innerHTML=(q.k_candidates||[]).map(x=>`<div class="k-candidate"><b>${esc(x.k)} nhóm</b><span>Mức tách biệt ${Number(x.silhouette||0).toFixed(3)}</span><small>Nhóm nhỏ nhất ${pct(x.balance?.min_pct||0)}%</small></div>`).join('')||'<p class="muted">Số nhóm đã được chọn sẵn hoặc bộ dữ liệu quá nhỏ nên hệ thống không cần thử nhiều phương án.</p>';
 }
 
 async function loadSegments(){
@@ -390,9 +398,9 @@ async function loadSegments(){
       const p=g.profile||{}, avg=g.conf.length?g.conf.reduce((a,b)=>a+b,0)/g.conf.length:Number(p.avg_segment_confidence||0);
       const diffs=(p.differentiators||[]).slice(0,3);
       return `<div class="card segment-card-v2">
-        <div class="segment-card-top"><span class="eyebrow">PHÂN KHÚC ${Number(id)+1}</span><span class="confidence-pill">${Math.round(avg*100)}% confidence</span></div>
+        <div class="segment-card-top"><span class="eyebrow">PHÂN KHÚC ${Number(id)+1}</span><span class="confidence-pill">${Math.round(avg*100)}% chắc chắn</span></div>
         <h3>${esc(g.name)}</h3><div class="segment-pop"><b>${g.count.toLocaleString()}</b><span>khách hàng · ${pct(p.share_pct||0)}%</span></div>
-        <p class="segment-explain">${esc(p.explanation||'Phân khúc được tạo từ các feature có độ tin cậy đủ cao.')}</p>
+        <p class="segment-explain">${esc(p.explanation||'Nhóm được tạo từ các thông tin khách hàng có độ tin cậy đủ cao.')}</p>
         <div class="segment-diffs">${diffs.map(x=>`<span>${esc(x.type==='numeric'?`${fieldLabel(x.field)} ${x.direction==='higher'?'↑':'↓'}`:`${fieldLabel(x.field)}: ${x.value}`)}</span>`).join('')}</div>
         <div class="segment-meta"><span>RFM: <b>${esc(p.top_rfm_segment||'—')}</b></span><span>Danh mục: <b>${esc(p.top_category||'—')}</b></span><span>Nghề: <b>${esc(p.top_job||'—')}</b></span></div>
       </div>`;
@@ -405,10 +413,10 @@ async function loadAllPersonas(){
   try{
     const d=await api('/api/personas?limit=5000'), items=d.items||[];
     if(empty) empty.classList.toggle('hidden', items.length>0);
-    list.innerHTML=items.map(t=>`<div class="persona"><b>${esc(t.twin_id||t.name||'Digital Twin')}</b><small>
+    list.innerHTML=items.map(t=>`<div class="persona"><b>${esc(t.twin_id||t.name||'Khách hàng ảo')}</b><small>
       Phân khúc ${esc(t.segment_id??'—')} · Tuổi ${esc(t.age??'—')} · ${esc(t.location||'')}<br>
       Nghề: ${esc(t.job||'—')}<br>Sở thích: ${esc(t.interest_keywords||t.interests||'—')}<br>
-      Confidence: ${Math.round(Number(t.confidence||0)*100)}%
+      Độ chắc chắn: ${Math.round(Number(t.confidence||0)*100)}%
     </small></div>`).join('');
   }catch(e){ if(empty){empty.textContent='Không thể tải danh sách khách hàng ảo: '+e.message;empty.classList.remove('hidden');} }
 }
@@ -421,14 +429,14 @@ function renderTrends(items, message=''){
     <td>${esc(r.latest_score??'—')}</td>
     <td>${esc(r.peak_score??'—')}</td>
   </tr>`).join('') || '<tr><td colspan="4">Pytrends chưa trả dữ liệu.</td></tr>';
-  if(el('trendStatus')) el('trendStatus').textContent=message || `${(items||[]).length} kết quả từ Pytrends`;
+  if(el('trendStatus')) el('trendStatus').textContent=message || `${(items||[]).length} xu hướng được cập nhật`;
 }
 
 async function collectPytrends(){
-  const btn=el('collectTrends'), msg=el('analysisMsg'); if(btn){btn.disabled=true;btn.textContent='Đang lấy Pytrends...';}
+  const btn=el('collectTrends'), msg=el('analysisMsg'); if(btn){btn.disabled=true;btn.textContent='Đang lấy xu hướng tìm kiếm...';}
   try{
     const d=await api('/api/trends/collect',{method:'POST'}); renderTrends(d.items||[], d.message||d.error||'Hoàn thành');
-    if(msg){msg.textContent=d.ok?(d.message||'Đã thu thập Pytrends.'):(d.error||d.message||'Pytrends chưa trả dữ liệu.');msg.className='notice '+(d.ok?'success':'error');}
+    if(msg){msg.textContent=d.ok?(d.message||'Đã thu thập Pytrends.'):(d.error||d.message||'Chưa nhận được dữ liệu xu hướng.');msg.className='notice '+(d.ok?'success':'error');}
   }catch(e){ if(msg){msg.textContent='Pytrends lỗi: '+e.message;msg.className='notice error';} }
   finally{ if(btn){btn.disabled=false;btn.textContent='Thu thập Pytrends';} }
 }
@@ -454,7 +462,7 @@ function updateLearningHistoryDeleteButton(){const b=document.querySelector('#de
 function learningFieldSummary(details){
   const items=details?.learned_fields||details?.learned_summary||[];
   if(!items.length)return '<span class="muted">Bản ghi cũ chưa lưu chi tiết từng trường.</span>';
-  return items.map(x=>`<div class="history-field"><b>${esc(x.field||'')}</b><span>${x.learned?'Đã học':'Chưa đủ bằng chứng'} · Confidence ${Math.round(Number(x.confidence||0)*100)}% · ${esc(x.strategy||'')}</span>${x.evidence?`<small>${esc(x.evidence)}</small>`:''}</div>`).join('');
+  return items.map(x=>`<div class="history-field"><b>${esc(x.field||'')}</b><span>${x.learned?'Đã phân tích':'Chưa đủ căn cứ'} · Độ chắc chắn ${Math.round(Number(x.confidence||0)*100)}%${x.strategy?` · ${esc(x.strategy)}`:''}</span>${x.evidence?`<small>${esc(x.evidence)}</small>`:''}</div>`).join('');
 }
 function renderLearningHistory(items){
   learningHistoryItems=items||[]; const list=document.querySelector('#learningHistoryList'); if(!list)return;

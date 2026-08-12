@@ -2,9 +2,9 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>MarketSim AI — ADMIN</title>
+  <title>MarketSim AI — Quản trị doanh nghiệp</title>
   <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/admin.css?v=20260812-admin-membership-v2">
+  <link rel="stylesheet" href="/static/css/admin.css?v=20260813-business-friendly-1">
 </head>
 <body>
 <div class="admin-app">
@@ -14,7 +14,7 @@
     <nav>
       <button class="admin-nav active" data-view="overview">Tổng quan doanh nghiệp</button>
       <button class="admin-nav" data-view="staff">Nhân viên</button>
-      <button class="admin-nav" data-view="data">Dữ liệu & AI Learning</button>
+      <button class="admin-nav" data-view="data">Dữ liệu & AI đã phân tích</button>
       <button class="admin-nav" data-view="projects">Dự án Marketing</button>
       <button class="admin-nav" data-view="activity">Nhật ký hoạt động</button>
       <button class="admin-nav" data-view="settings">Mã doanh nghiệp</button>
@@ -29,10 +29,10 @@
       <div class="admin-kpi-grid">
         <article class="admin-kpi"><span>Nhân viên</span><b id="kStaff">0</b><small id="kActive">0 đang hoạt động</small></article>
         <article class="admin-kpi"><span>Dự án marketing</span><b id="kProjects">0</b><small>Toàn doanh nghiệp</small></article>
-        <article class="admin-kpi"><span>Dữ liệu khách hàng</span><b id="kCustomers">0</b><small id="kDatasets">0 bộ dữ liệu</small></article>
-        <article class="admin-kpi"><span>Digital Twin</span><b id="kTwins">0</b><small id="kPersonas">0 persona</small></article>
+        <article class="admin-kpi"><span>Dữ liệu khách hàng</span><b id="kCustomers">0</b><small id="kBộ dữ liệus">0 bộ dữ liệu</small></article>
+        <article class="admin-kpi"><span>Khách hàng ảo</span><b id="kTwins">0</b><small id="kPersonas">0 persona</small></article>
         <article class="admin-kpi"><span>Lượt phản hồi mô phỏng</span><b id="kResponses">0</b><small id="kScore">Điểm TB 0/10</small></article>
-        <article class="admin-kpi"><span>AI Learning đã xác nhận</span><b id="kLearning">0</b><small id="kReal">REAL 0%</small></article>
+        <article class="admin-kpi"><span>AI đã phân tích đã xác nhận</span><b id="kLearning">0</b><small id="kReal">REAL 0%</small></article>
       </div>
 
       <div class="admin-grid-2">
@@ -41,7 +41,7 @@
       </div>
 
       <div class="admin-grid-2">
-        <article class="admin-card"><div class="card-title"><div><h3>Dữ liệu mới nhất</h3><p>Các file khách hàng được tải lên gần đây.</p></div></div><div id="recentDatasets" class="simple-list"></div></article>
+        <article class="admin-card"><div class="card-title"><div><h3>Dữ liệu mới nhất</h3><p>Các file khách hàng được tải lên gần đây.</p></div></div><div id="recentBộ dữ liệus" class="simple-list"></div></article>
         <article class="admin-card"><div class="card-title"><div><h3>Dự án mới nhất</h3><p>Các chiến dịch marketing nhân viên đã phân tích.</p></div></div><div id="recentProjects" class="simple-list"></div></article>
       </div>
     </section>
@@ -49,21 +49,21 @@
     <section id="view-staff" class="admin-view">
       <div id="teamHealth" class="team-health checking">Đang kiểm tra liên kết doanh nghiệp & nhân viên...</div>
       <div class="admin-card">
-        <div class="card-title"><div><h3>Danh sách nhân viên</h3><p>Chỉ hiển thị tài khoản thuộc đúng doanh nghiệp của ADMIN này.</p><small id="staffUpdated" class="staff-updated">Chưa tải</small></div><button id="refreshStaff" class="secondary">Làm mới nhân viên</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Trạng thái</th><th>Ngày tham gia</th><th>Dataset</th><th>Dự án</th><th>Phản hồi mô phỏng</th><th>Hoạt động cuối</th><th></th></tr></thead><tbody id="staffBody"></tbody></table></div>
+        <div class="card-title"><div><h3>Danh sách nhân viên</h3><p>Chỉ hiển thị nhân viên thuộc đúng doanh nghiệp đang quản trị.</p><small id="staffUpdated" class="staff-updated">Chưa tải</small></div><button id="refreshStaff" class="secondary">Làm mới nhân viên</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Trạng thái</th><th>Ngày tham gia</th><th>Bộ dữ liệu</th><th>Dự án</th><th>Phản hồi mô phỏng</th><th>Hoạt động cuối</th><th></th></tr></thead><tbody id="staffBody"></tbody></table></div>
       </div>
       <div id="staffDetail" class="admin-card hidden staff-detail"></div>
     </section>
 
-    <section id="view-data" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Bộ dữ liệu</span><b id="dataDatasets">0</b></article><article class="metric-block"><span>Khách hàng đã lưu</span><b id="dataCustomers">0</b></article><article class="metric-block"><span>AI Learning xác nhận</span><b id="dataLearning">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dữ liệu gần đây</h3><p>File, người tải và số lượng bản ghi.</p></div></div><div id="dataList" class="simple-list"></div></div></section>
+    <section id="view-data" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Bộ dữ liệu</span><b id="dataBộ dữ liệus">0</b></article><article class="metric-block"><span>Khách hàng đã lưu</span><b id="dataCustomers">0</b></article><article class="metric-block"><span>AI đã phân tích xác nhận</span><b id="dataLearning">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dữ liệu gần đây</h3><p>File, người tải và số lượng bản ghi.</p></div></div><div id="dataList" class="simple-list"></div></div></section>
 
-    <section id="view-projects" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Dự án</span><b id="projectCount">0</b></article><article class="metric-block"><span>Digital Twin</span><b id="projectTwins">0</b></article><article class="metric-block"><span>Điểm phản ứng TB</span><b id="projectScore">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dự án marketing gần đây</h3><p>Người thực hiện và mức đánh giá mô phỏng.</p></div></div><div id="projectList" class="simple-list"></div></div></section>
+    <section id="view-projects" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Dự án</span><b id="projectCount">0</b></article><article class="metric-block"><span>Khách hàng ảo</span><b id="projectTwins">0</b></article><article class="metric-block"><span>Điểm phản ứng TB</span><b id="projectScore">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dự án marketing gần đây</h3><p>Người thực hiện và mức đánh giá mô phỏng.</p></div></div><div id="projectList" class="simple-list"></div></div></section>
 
-    <section id="view-activity" class="admin-view"><div class="admin-card"><div class="card-title"><div><h3>Nhật ký hoạt động doanh nghiệp</h3><p>Theo dõi các thao tác quan trọng của ADMIN và nhân viên.</p></div><button id="refreshActivity" class="secondary">Làm mới</button></div><div id="activityFull" class="activity-list full"></div></div></section>
+    <section id="view-activity" class="admin-view"><div class="admin-card"><div class="card-title"><div><h3>Nhật ký hoạt động doanh nghiệp</h3><p>Theo dõi các thao tác quan trọng của quản trị viên và nhân viên.</p></div><button id="refreshActivity" class="secondary">Làm mới</button></div><div id="activityFull" class="activity-list full"></div></div></section>
 
-    <section id="view-settings" class="admin-view"><div class="admin-grid-2"><article class="admin-card code-card"><div class="eyebrow">MÃ THAM GIA DOANH NGHIỆP</div><div class="company-meta"><span>Company ID nội bộ</span><b id="companyId">—</b></div><h3>Mã đăng ký nhân viên</h3><p class="muted">Gửi đúng mã này cho nhân viên. Khi đăng ký, MarketSim sẽ kiểm tra mã và hiển thị tên doanh nghiệp trước khi tạo tài khoản.</p><div id="joinCode" class="join-code">••••••••••••</div><div class="code-actions"><button id="copyCode" class="secondary">Sao chép mã</button><button id="regenerateCode" class="primary">Tạo mã mới</button></div><div class="notice">Mã tham gia khác với Company ID. Khi tạo mã mới, mã cũ ngừng dùng cho đăng ký mới; nhân viên đã tham gia vẫn giữ nguyên doanh nghiệp.</div></article><article class="admin-card"><div class="eyebrow">TRẠNG THÁI LIÊN KẾT</div><h3>Doanh nghiệp & nhân viên</h3><div id="settingsTeamStatus" class="team-status-box">Đang kiểm tra...</div><ul class="policy-list"><li>Mỗi nhân viên chỉ thuộc một company_id.</li><li>ADMIN chỉ thấy nhân viên của company_id mình sở hữu.</li><li>Tài khoản cũ thiếu company_id sẽ chỉ được tự sửa khi quan hệ admin_owner_id xác định chắc chắn.</li><li>Không tự chuyển nhân viên giữa hai doanh nghiệp.</li></ul><p class="muted">ADMIN không xem mật khẩu của nhân viên.</p></article></div></section>
+    <section id="view-settings" class="admin-view"><div class="admin-grid-2"><article class="admin-card code-card"><div class="eyebrow">MÃ THAM GIA DOANH NGHIỆP</div><div class="company-meta"><span>Mã nội bộ hệ thống</span><b id="companyId">—</b></div><h3>Mã đăng ký nhân viên</h3><p class="muted">Gửi đúng mã này cho nhân viên. Khi đăng ký, MarketSim sẽ kiểm tra mã và hiển thị tên doanh nghiệp trước khi tạo tài khoản.</p><div id="joinCode" class="join-code">••••••••••••</div><div class="code-actions"><button id="copyCode" class="secondary">Sao chép mã</button><button id="regenerateCode" class="primary">Tạo mã mới</button></div><div class="notice">Mã đăng ký nhân viên khác với mã nội bộ hệ thống. Khi tạo mã mới, mã cũ ngừng dùng cho đăng ký mới; nhân viên đã tham gia vẫn giữ nguyên doanh nghiệp.</div></article><article class="admin-card"><div class="eyebrow">TRẠNG THÁI LIÊN KẾT</div><h3>Doanh nghiệp & nhân viên</h3><div id="settingsTeamStatus" class="team-status-box">Đang kiểm tra...</div><ul class="policy-list"><li>Mỗi nhân viên chỉ thuộc một doanh nghiệp.</li><li>Quản trị viên chỉ thấy nhân viên thuộc doanh nghiệp của mình.</li><li>Tài khoản cũ chỉ được tự khôi phục liên kết khi hệ thống xác định chắc chắn doanh nghiệp sở hữu.</li><li>Không tự chuyển nhân viên giữa hai doanh nghiệp.</li></ul><p class="muted">Quản trị viên không thể xem mật khẩu của nhân viên.</p></article></div></section>
   </main>
 </div>
 <div id="adminToast" class="toast"></div>
-<script src="/static/js/admin.js?v=20260812-admin-membership-v2"></script>
+<script src="/static/js/admin.js?v=20260813-business-friendly-1"></script>
 </body></html>

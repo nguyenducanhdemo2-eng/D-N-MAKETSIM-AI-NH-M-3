@@ -982,14 +982,24 @@ def feedback_list(req:Request):
     u=current_user(req); from marketing_learning import feedback_history,latest_calibration
     return json_safe({'items':feedback_history(config.DB_PATH,100,user_id=u['id']).to_dict('records'),'calibration':latest_calibration(config.DB_PATH,user_id=u['id'])})
 
-# Chat memory transport only: keeps conversation context per account without changing
-# AI Learning, Digital Twin, segmentation, or simulation algorithms.
-_CHAT_CONTEXT_MESSAGES = 24
-_CHAT_MESSAGE_CHAR_LIMIT = 1400
+# Chat assistant memory.
+# This only changes the assistant conversation layer. AI Learning, Digital Twin,
+# segmentation, simulation and calibration logic are untouched.
+_CHAT_CONTEXT_MESSAGES = 28
+_CHAT_RETRIEVAL_MESSAGES = 8
+_CHAT_HISTORY_SEARCH_LIMIT = 400
+_CHAT_MESSAGE_CHAR_LIMIT = 1600
+
+_CHAT_STOP_WORDS = {
+    'la','là','va','và','cua','của','cho','toi','tôi','ban','bạn','mot','một',
+    'nhung','những','cac','các','thi','thì','ma','mà','o','ở','co','có','nay','này',
+    'do','đó','voi','với','duoc','được','gi','gì','hay','hãy','se','sẽ','da','đã',
+    'dang','đang','tu','từ','tren','trên','trong','the','thế','nao','nào'
+}
 
 
 def _compact_chat_context(items: list[dict]) -> list[dict]:
-    """Keep a token-conscious recent window while preserving message order."""
+    """Keep a token-conscious recent window while preserving real chat roles."""
     compact=[]
     for item in (items or [])[-_CHAT_CONTEXT_MESSAGES:]:
         role=str(item.get('role') or '').lower()
@@ -999,23 +1009,187 @@ def _compact_chat_context(items: list[dict]) -> list[dict]:
         if not content:
             continue
         if len(content)>_CHAT_MESSAGE_CHAR_LIMIT:
-            content=content[-_CHAT_MESSAGE_CHAR_LIMIT:]
+            half=_CHAT_MESSAGE_CHAR_LIMIT//2
+            content=content[:half]+' … '+content[-half:]
         compact.append({'role':role,'content':content})
     return compact
+
+
+def _clean_memory_value(value: str, max_len: int = 160) -> str:
+    value=re.sub(r'\s+',' ',str(value or '')).strip(" \t\r\n,.;:!?\"'")
+    return value[:max_len].strip()
+
+
+def _valid_explicit_memory_value(value: str) -> bool:
+    """Reject question words/placeholders so 'tôi tên là gì?' never overwrites a real name."""
+    norm=_clean_memory_value(value,220).casefold()
+    if not norm:
+        return False
+    blocked={
+        'gì','gi','ai','gì vậy','gi vay','gì nhỉ','gi nhi','gì thế','gi the',
+        'không biết','khong biet','chưa biết','chua biet','không rõ','khong ro',
+    }
+    return norm not in blocked and not norm.startswith(('gì ','gi ','ai '))
+
+
+def _extract_explicit_chat_memories(message: str) -> list[dict]:
+    """Extract only facts explicitly stated by the user; never infer hidden traits."""
+    raw=str(message or '').strip()
+    if not raw:
+        return []
+    out=[]
+
+    name_patterns=[
+        r'(?i)(?:từ\s+giờ\s+)?(?:hãy\s+)?gọi\s+tôi\s+là\s+([^\n,.!?]{1,80}?)(?=\s+và\s+|$|[,.!?])',
+        r'(?i)tôi\s+tên\s+là\s+([^\n,.!?]{1,80}?)(?=\s+và\s+|$|[,.!?])',
+        r'(?i)tên\s+(?:của\s+)?tôi\s+là\s+([^\n,.!?]{1,80}?)(?=\s+và\s+|$|[,.!?])',
+    ]
+    for pat in name_patterns:
+        m=re.search(pat,raw)
+        if m:
+            value=_clean_memory_value(m.group(1),80)
+            if _valid_explicit_memory_value(value):
+                out.append({'key':'preferred_name','value':value})
+                break
+
+    company_patterns=[
+        r'(?i)công\s+ty\s+(?:của\s+)?tôi\s+(?:tên\s+)?là\s+([^\n,.!?]{1,120}?)(?=\s+và\s+|$|[,.!?])',
+        r'(?i)doanh\s+nghiệp\s+(?:của\s+)?tôi\s+(?:tên\s+)?là\s+([^\n,.!?]{1,120}?)(?=\s+và\s+|$|[,.!?])',
+    ]
+    for pat in company_patterns:
+        m=re.search(pat,raw)
+        if m:
+            value=_clean_memory_value(m.group(1),120)
+            if _valid_explicit_memory_value(value):
+                out.append({'key':'company_name','value':value})
+                break
+
+    m=re.search(r'(?is)(?:hãy\s+nhớ|nhớ\s+rằng|ghi\s+nhớ\s+rằng)\s+(.{3,220})$',raw)
+    if m:
+        value=_clean_memory_value(m.group(1),220)
+        if value and not any(x['value'].casefold()==value.casefold() for x in out):
+            import hashlib
+            key='note_'+hashlib.sha1(value.casefold().encode('utf-8')).hexdigest()[:12]
+            out.append({'key':key,'value':value})
+    return out
+
+
+def _memory_label(item: dict) -> str:
+    key=str(item.get('memory_key') or '')
+    value=str(item.get('memory_value') or '').strip()
+    if key=='preferred_name':
+        return f'Tên người dùng muốn được gọi: {value}'
+    if key=='company_name':
+        return f'Doanh nghiệp người dùng đã nhắc đến: {value}'
+    return f'Điều người dùng đã yêu cầu ghi nhớ: {value}'
+
+
+def _chat_terms(text: str) -> set[str]:
+    import unicodedata
+    norm=unicodedata.normalize('NFD',str(text or '').casefold())
+    norm=''.join(c for c in norm if unicodedata.category(c)!='Mn')
+    words=re.findall(r'[a-z0-9_]{2,}',norm)
+    return {w for w in words if w not in _CHAT_STOP_WORDS}
+
+
+def _relevant_older_chat(history: list[dict], query: str, recent_ids: set[int], limit: int = _CHAT_RETRIEVAL_MESSAGES) -> list[dict]:
+    """Retrieve a few older turns that are textually relevant to the current question."""
+    q_terms=_chat_terms(query)
+    q_norm=str(query or '').casefold()
+    scored=[]
+    total=max(1,len(history))
+    for pos,item in enumerate(history):
+        try:
+            mid=int(item.get('id') or 0)
+        except Exception:
+            mid=0
+        if mid and mid in recent_ids:
+            continue
+        role=str(item.get('role') or '').lower()
+        if role not in ('user','assistant'):
+            continue
+        content=str(item.get('content') or '').strip()
+        if not content:
+            continue
+        c_terms=_chat_terms(content)
+        overlap=len(q_terms & c_terms)
+        score=float(overlap)*4.0
+        if any(x in q_norm for x in ('tên là gì','tên tôi','gọi tôi','tôi là ai')):
+            c_norm=content.casefold()
+            if any(x in c_norm for x in ('tôi tên là','tên tôi là','gọi tôi là','gọi tôi')):
+                score+=20.0
+        score+=(pos+1)/total*0.25
+        if score>0.5:
+            scored.append((score,pos,item))
+    top=sorted(scored,key=lambda x:(-x[0],-x[1]))[:max(0,int(limit))]
+    return [x[2] for x in sorted(top,key=lambda x:x[1])]
+
+
+def _build_chat_messages(history: list[dict], memories: list[dict], query: str) -> tuple[list[dict], int]:
+    recent=(history or [])[-_CHAT_CONTEXT_MESSAGES:]
+    recent_ids={int(x.get('id') or 0) for x in recent if x.get('id')}
+    relevant=_relevant_older_chat(history or [],query,recent_ids)
+
+    system=(
+        'Bạn là Trợ lý MarketSim AI dành cho người làm kinh doanh và marketing. '
+        'Trả lời bằng tiếng Việt rõ ràng, thân thiện, tránh thuật ngữ kỹ thuật khi không cần thiết. '
+        'Hãy giữ mạch hội thoại: dùng các tin nhắn trước và bộ nhớ đã xác nhận để hiểu những câu '
+        'như "phần đó", "nhóm vừa rồi", "tôi tên là gì" hoặc yêu cầu tiếp nối. '
+        'Nếu một thông tin đã có trong bộ nhớ hoặc lịch sử thì không được nói rằng bạn không biết. '
+        'Nếu thực sự chưa có thông tin thì nói rõ là chưa có, không tự bịa. '
+        'Không biến kết quả mô phỏng thành sự thật tuyệt đối.'
+    )
+    messages=[{'role':'system','content':system}]
+
+    if memories:
+        memory_text='BỘ NHỚ ĐÃ ĐƯỢC NGƯỜI DÙNG NÓI RÕ:\n' + '\n'.join(
+            f'- {_memory_label(x)}' for x in memories[:50]
+        )
+        memory_text+=(
+            '\nCác thông tin trên do chính người dùng đã nói hoặc yêu cầu ghi nhớ. '
+            'Ưu tiên dùng chúng khi câu hỏi liên quan.'
+        )
+        messages.append({'role':'system','content':memory_text})
+
+    if relevant:
+        old_text='MỘT SỐ ĐOẠN HỘI THOẠI CŨ CÓ LIÊN QUAN:\n'
+        for item in relevant:
+            who='Người dùng' if item.get('role')=='user' else 'Trợ lý'
+            content=str(item.get('content') or '')
+            if len(content)>900:
+                content=content[:450]+' … '+content[-450:]
+            old_text+=f'- {who}: {content}\n'
+        messages.append({'role':'system','content':old_text.strip()})
+
+    messages.extend(_compact_chat_context(recent))
+    return messages,len(relevant)
 
 
 @app.get('/api/chat/history')
 def assistant_history(req:Request, limit:int=200):
     u=current_user(req)
     items=get_chat_history(u['id'],limit=max(1,min(limit,500)),company_id=u.get('company_id'))
-    return json_safe({'ok':True,'items':items,'count':len(items)})
+    memories=get_chat_memories(u['id'],company_id=u.get('company_id'),limit=50)
+    return json_safe({'ok':True,'items':items,'count':len(items),'memory_count':len(memories)})
+
+
+@app.get('/api/chat/memory')
+def assistant_memory(req:Request):
+    u=current_user(req)
+    memories=get_chat_memories(u['id'],company_id=u.get('company_id'),limit=50)
+    return json_safe({
+        'ok':True,
+        'count':len(memories),
+        'items':[{'label':_memory_label(x),'updated_at':x.get('updated_at')} for x in memories],
+    })
 
 
 @app.delete('/api/chat/history')
 def assistant_clear_history(req:Request):
     u=current_user(req)
     deleted=clear_chat_history(u['id'],company_id=u.get('company_id'))
-    return {'ok':True,'deleted':deleted}
+    deleted_memory=clear_chat_memory(u['id'],company_id=u.get('company_id'))
+    return {'ok':True,'deleted':deleted,'deleted_memory':deleted_memory}
 
 
 @app.post('/api/chat')
@@ -1025,24 +1199,47 @@ async def assistant(req:Request,b:Chat):
     message=str(b.message or '').strip()
     if not message:
         raise HTTPException(400,'Tin nhắn không được để trống.')
-    context=(
-        'Bạn là trợ lý MarketSim AI. Trả lời bằng tiếng Việt rõ ràng, tự nhiên. '
-        'Bạn được cung cấp lịch sử hội thoại gần đây của đúng tài khoản này: hãy dùng nó để hiểu '
-        'các đại từ, yêu cầu tiếp nối và những gì người dùng vừa nói ở các lượt trước; không hỏi lại '
-        'thông tin đã có trong lịch sử nếu không cần thiết. Nếu lịch sử không chứa thông tin thì nói rõ, '
-        'không tự bịa. Dữ liệu khách hàng thật chỉ được xử lý cục bộ; chỉ thảo luận dữ liệu tổng hợp '
-        'sau lọc. Không khẳng định dự đoán mô phỏng là sự thật.'
+
+    message_id=save_chat_message(u['id'],'user',message,provider,u.get('company_id'))
+
+    for item in _extract_explicit_chat_memories(message):
+        upsert_chat_memory(
+            u['id'],item['key'],item['value'],
+            company_id=u.get('company_id'),source_message_id=message_id,
+        )
+
+    full_history=get_chat_history(
+        u['id'],limit=_CHAT_HISTORY_SEARCH_LIMIT,company_id=u.get('company_id')
     )
-    # Persist user message first so history survives refresh/server restart.
-    save_chat_message(u['id'],'user',message,provider,u.get('company_id'))
-    history=get_chat_history(u['id'],limit=_CHAT_CONTEXT_MESSAGES,company_id=u.get('company_id'))
-    messages=[{'role':'system','content':context}]+_compact_chat_context(history)
+
+    # One-time bootstrap for users who already had chat history before this upgrade:
+    # recover only explicit memories from their existing user messages. No AI call.
+    memories=get_chat_memories(u['id'],company_id=u.get('company_id'),limit=50)
+    if not memories:
+        for old in full_history:
+            if str(old.get('role') or '').lower()!='user':
+                continue
+            for item in _extract_explicit_chat_memories(old.get('content') or ''):
+                upsert_chat_memory(
+                    u['id'],item['key'],item['value'],
+                    company_id=u.get('company_id'),source_message_id=old.get('id'),
+                )
+        memories=get_chat_memories(u['id'],company_id=u.get('company_id'),limit=50)
+
+    messages,retrieved_count=_build_chat_messages(full_history,memories,message)
+
     try:
         answer=await chat(messages,provider)
         save_chat_message(u['id'],'assistant',answer,provider,u.get('company_id'))
-        return {'ok':True,'provider':provider,'answer':answer,'memory_messages':len(messages)-1}
+        return {
+            'ok':True,'provider':provider,'answer':answer,
+            'memory_messages':len(_compact_chat_context(full_history)),
+            'memory_count':len(memories),
+            'older_context_used':retrieved_count,
+        }
     except Exception as e:
         raise HTTPException(502,str(e))
+
 @app.get('/api/help')
 def help_content(req:Request):
     current_user(req); return {'sections':[
