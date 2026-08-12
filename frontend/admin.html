@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MarketSim AI — Quản trị doanh nghiệp</title>
   <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/admin.css?v=20260813-business-friendly-1">
+  <link rel="stylesheet" href="/static/css/admin.css?v=20260813-employee-link-fix-2">
 </head>
 <body>
 <div class="admin-app">
@@ -49,7 +49,7 @@
     <section id="view-staff" class="admin-view">
       <div id="teamHealth" class="team-health checking">Đang kiểm tra liên kết doanh nghiệp & nhân viên...</div>
       <div class="admin-card">
-        <div class="card-title"><div><h3>Danh sách nhân viên</h3><p>Chỉ hiển thị nhân viên thuộc đúng doanh nghiệp đang quản trị.</p><small id="staffUpdated" class="staff-updated">Chưa tải</small></div><button id="refreshStaff" class="secondary">Làm mới nhân viên</button></div>
+        <div class="card-title"><div><h3>Danh sách nhân viên</h3><p>Nhân viên đăng ký bằng mã của doanh nghiệp sẽ xuất hiện tại đây.</p><small id="staffUpdated" class="staff-updated">Chưa tải</small></div><div class="row-actions"><button id="repairStaff" class="secondary">Kiểm tra & đồng bộ</button><button id="refreshStaff" class="secondary">Làm mới</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>Nhân viên</th><th>Trạng thái</th><th>Ngày tham gia</th><th>Bộ dữ liệu</th><th>Dự án</th><th>Phản hồi mô phỏng</th><th>Hoạt động cuối</th><th></th></tr></thead><tbody id="staffBody"></tbody></table></div>
       </div>
       <div id="staffDetail" class="admin-card hidden staff-detail"></div>
@@ -65,5 +65,5 @@
   </main>
 </div>
 <div id="adminToast" class="toast"></div>
-<script src="/static/js/admin.js?v=20260813-business-friendly-1"></script>
+<script src="/static/js/admin.js?v=20260813-employee-link-fix-2"></script>
 </body></html>

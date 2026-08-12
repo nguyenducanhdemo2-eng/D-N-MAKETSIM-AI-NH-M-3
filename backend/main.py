@@ -18,6 +18,7 @@ from digital_twin import generate_synthetic_twins, twins_to_dataframe
 from advanced_simulation import simulate_twins, paired_compare, optimize_marketing
 from .auth_db import init_auth, create_session, get_user, delete_session
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
+    employee_visible_to_admin, repair_company_memberships,
     create_company_admin, bootstrap_code_valid, require_admin_account, get_admin_profile, regenerate_join_code,
     admin_overview, admin_staff, admin_employee_detail, admin_activity, admin_team_health, set_employee_active,
     normalize_join_code, record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
@@ -271,6 +272,10 @@ def register(b:EmployeeRegister):
     try:
         uid=create_user(b.email,b.password)
         membership=attach_employee(uid,admin['id'],b.display_name)
+        # Do not report success until the same membership is visible through the
+        # ADMIN-facing data path. This catches partially migrated databases early.
+        if not employee_visible_to_admin(admin['id'], uid):
+            raise ValueError('Tài khoản chưa được thêm vào danh sách nhân viên của doanh nghiệp. Hệ thống đã hủy thao tác; vui lòng thử lại.')
         record_activity(uid,'Tạo tài khoản nhân viên','/api/auth/register','POST',200,f"Gia nhập {admin.get('organization_name','doanh nghiệp')} · company_id={membership.get('company_id')}")
     except Exception as e:
         # Do not leave an orphan account that blocks the employee from retrying
@@ -279,7 +284,10 @@ def register(b:EmployeeRegister):
             try:
                 import sqlite3
                 with sqlite3.connect(config.DB_PATH) as c:
-                    c.execute("DELETE FROM users WHERE id=? AND company_id IS NULL AND role='employee'",(int(uid),))
+                    # If the attach step failed, remove only the just-created account
+                    # and its membership mirror. Existing accounts are never touched.
+                    c.execute("DELETE FROM company_memberships WHERE user_id=?",(int(uid),))
+                    c.execute("DELETE FROM users WHERE id=? AND role='employee'",(int(uid),))
                     c.commit()
             except Exception:
                 pass
@@ -290,6 +298,8 @@ def register(b:EmployeeRegister):
         'company_id':membership.get('company_id'),
         'organization':membership.get('organization_name') or admin.get('organization_name'),
         'join_code':admin.get('join_code'),
+        'membership_verified':True,
+        'message':'Tài khoản đã được thêm vào danh sách nhân viên của doanh nghiệp.',
     }
 
 @app.post('/api/auth/register-admin')
@@ -356,6 +366,16 @@ def admin_staff_api(req:Request):
 def admin_team_status_api(req:Request):
     u=current_admin(req)
     return json_safe(admin_team_health(u['id']))
+
+@app.post('/api/admin/team-repair')
+def admin_team_repair_api(req:Request):
+    """Đồng bộ an toàn các liên kết nhân viên có thể xác định chắc chắn."""
+    u=current_admin(req)
+    result=repair_company_memberships(u['id'])
+    health=admin_team_health(u['id'])
+    record_activity(u['id'],'Đồng bộ danh sách nhân viên','/api/admin/team-repair','POST',200,
+                    f"Đã kiểm tra {health.get('employees',0)} nhân viên")
+    return json_safe({'ok':True,'result':result,'health':health,'items':admin_staff(u['id'])})
 @app.get('/api/admin/staff/{employee_id}')
 def admin_staff_detail_api(req:Request,employee_id:int):
     u=current_admin(req)

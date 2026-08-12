@@ -97,6 +97,7 @@ def route_check():
         "/api/auth/register-admin",
         "/api/admin/staff",
         "/api/admin/team-status",
+        "/api/admin/team-repair",
         "/api/customers/inspect",
         "/api/customers/learning/history",
         "/api/chat/history",
@@ -149,6 +150,35 @@ def runtime_checks():
     staff_b = {x["id"] for x in adm.admin_staff(b)}
     require(ea in staff_a and eb not in staff_a, "ADMIN A nhìn thấy sai nhân viên")
     require(eb in staff_b and ea not in staff_b, "ADMIN B nhìn thấy sai nhân viên")
+    require(adm.employee_visible_to_admin(a, ea), "Tài khoản nhân viên A đã tạo nhưng ADMIN A chưa nhìn thấy")
+
+    # Dedicated membership mirror must exist and match the visible ADMIN list.
+    with sqlite3.connect(test_db) as c:
+        membership = c.execute(
+            "SELECT company_id,admin_id FROM company_memberships WHERE user_id=?",
+            (ea,),
+        ).fetchone()
+        require(membership is not None, "Không lưu được liên kết nhân viên với doanh nghiệp")
+        require(int(membership[0]) == int(ma["company_id"]) and int(membership[1]) == int(a),
+                "Liên kết nhân viên A đang trỏ sai doanh nghiệp")
+
+        # Simulate an older/partially migrated install: remove the mirror only.
+        c.execute("DELETE FROM company_memberships WHERE user_id=?", (ea,))
+        c.commit()
+    repaired_staff = {x["id"] for x in adm.admin_staff(a)}
+    require(ea in repaired_staff, "ADMIN không tự khôi phục được nhân viên khi bản ghi liên kết cũ bị thiếu")
+    with sqlite3.connect(test_db) as c:
+        require(c.execute("SELECT 1 FROM company_memberships WHERE user_id=?", (ea,)).fetchone() is not None,
+                "Danh sách ADMIN không tạo lại được liên kết bền vững cho nhân viên")
+
+    # Simulate a legacy employee that only has admin_owner_id.
+    legacy = db.create_user("legacy-a@verify.local", "123456")
+    with sqlite3.connect(test_db) as c:
+        c.execute("UPDATE users SET role='employee',admin_owner_id=?,company_id=NULL,display_name='Nhân viên cũ' WHERE id=?", (a, legacy))
+        c.commit()
+    adm.repair_company_memberships(a)
+    legacy_staff = {x["id"] for x in adm.admin_staff(a)}
+    require(legacy in legacy_staff, "Không khôi phục được nhân viên cũ đã có chủ doanh nghiệp rõ ràng")
 
     # 4) Dataset ownership isolation.
     ua = db.save_uploaded_dataset("a.csv", [{"customer_id":"A-1","age":25}], ["customer_id","age"], user_id=ea)
@@ -200,7 +230,7 @@ def runtime_checks():
     # 7) Important migrations exist.
     with sqlite3.connect(test_db) as c:
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    for table in ["users","companies","uploaded_datasets","canonical_customers","learning_audit","background_jobs","chat_messages","chat_memory"]:
+    for table in ["users","companies","company_memberships","uploaded_datasets","canonical_customers","learning_audit","background_jobs","chat_messages","chat_memory"]:
         require(table in tables, f"Thiếu bảng {table}")
 
     # 8) Backend import + route compatibility, catches stale patch combinations.
