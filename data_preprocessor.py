@@ -11,7 +11,7 @@ import json
 DATA_PREPROCESSOR_BUILD = "2026-08-02-fix3-dtype-duplicate-columns"
 
 # Import hàm gọi AI nội bộ từ file của bạn để tái sử dụng kết nối Ollama
-from persona_simulator import _call_ollama
+from backend.ai_bridge import call_text
 
 # Schema chuẩn giờ có 1 nguồn DUY NHẤT: schema_mapper.py. Trước đây file này
 # tự định nghĩa MASTER_SCHEMA riêng (thiếu interest_keywords/last_purchase_date
@@ -111,22 +111,17 @@ class AdvancedETLPipeline:
 
         return self
 
-    async def _ask_ollama_to_fill_missing(self, idx, row_data):
-        """Gửi 1 hồ sơ thiếu dữ liệu cho AI để suy luận ngữ cảnh"""
-        prompt = f"""
-        Phân tích hồ sơ khách hàng sau:
-        - Giới tính: {row_data.get('gender', 'Không rõ')}
-        - Nghề nghiệp / Ghi chú: {row_data.get('job', 'Không rõ')}
-        - Hành vi / Sở thích: {row_data.get('interest_keywords', 'Không rõ')}
 
-        Nhiệm vụ: Hãy suy luận logic độ tuổi (age), nghề nghiệp chuẩn hóa (job), nỗi đau mua sắm (pain_point),
-        tính cách (personality) và từ khóa sở thích (interest_keywords, 3-5 từ khóa cách nhau bởi dấu phẩy).
-        Chỉ trả về JSON duy nhất (không giải thích):
-        {{"age": 25, "job": "Sinh viên", "pain_point": "Sợ giá cao", "personality": "Thực tế, tiết kiệm", "interest_keywords": "công nghệ, tiết kiệm, khuyến mãi"}}
-        """
-        response = await _call_ollama(prompt)
+    async def _ask_ollama_to_fill_missing(self, idx, row_data):
+        prompt = f"""Phân tích hồ sơ khách hàng sau. Chỉ suy luận từ các tín hiệu được cung cấp, không bịa đặc điểm cá nhân nhạy cảm.
+Giới tính: {row_data.get('gender','Không rõ')}
+Nghề nghiệp: {row_data.get('job','Không rõ')}
+Sở thích: {row_data.get('interest_keywords','Không rõ')}
+Hãy trả JSON duy nhất gồm age, job, pain_point, personality, interest_keywords. Nếu không đủ bằng chứng, để null.
+"""
         try:
-            clean_json = response[response.find("{"): response.rfind("}") + 1]
+            response = await call_text(prompt, temperature=0.2, json_mode=True)
+            clean_json = response[response.find('{'): response.rfind('}') + 1]
             return idx, json.loads(clean_json)
         except Exception:
             return idx, None

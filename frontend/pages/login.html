@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MarketSim AI — Đăng nhập</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .auth-shell{width:min(540px,94vw)}.auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0}
+    .auth-tab{border:1px solid var(--border);background:#f8fafc;color:#607087;border-radius:10px;padding:10px;font-weight:700}
+    .auth-tab.active{background:#edf4ff;border-color:#91b2ef;color:#2459ad}.auth-panel{display:none}.auth-panel.active{display:block}
+    .mini-note{font-size:11px;line-height:1.55;color:#66778d;background:#f7f9fc;border:1px solid var(--border);border-radius:10px;padding:11px 12px;margin:12px 0}
+    .code-preview{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:18px;letter-spacing:1px;text-align:center;background:#0d1b2f;color:white;padding:12px;border-radius:10px;margin-top:10px}
+    .tenant-chip{display:inline-flex;align-items:center;gap:6px;background:#eef6ff;color:#2459ad;border:1px solid #c8dcff;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:700}
+  </style>
+</head>
+<body class="auth-body">
+<div class="auth-shell">
+  <div class="auth-brand"><div class="brand-mark">M</div><div><b>MarketSim AI</b><span>Marketing Simulation for Business</span></div></div>
+  <div class="auth-card">
+    <div class="eyebrow">HỆ THỐNG ĐA DOANH NGHIỆP</div>
+    <h1>Đăng nhập</h1>
+    <p class="muted">Mỗi doanh nghiệp có không gian riêng, một ADMIN riêng và mã đăng ký nhân viên riêng.</p>
+
+    <form id="loginForm">
+      <label>Email</label><input id="loginEmail" type="email" required placeholder="you@company.com">
+      <label>Mật khẩu</label><input id="loginPassword" type="password" required placeholder="••••••••">
+      <button class="primary wide" type="submit">Đăng nhập</button>
+    </form>
+    <div id="msg" class="notice hidden"></div>
+
+    <div class="auth-tabs">
+      <button id="showEmployee" class="auth-tab active" type="button">Đăng ký nhân viên</button>
+      <button id="showAdmin" class="auth-tab" type="button">Đăng ký doanh nghiệp</button>
+    </div>
+
+    <div id="employeePanel" class="auth-panel active">
+      <div class="mini-note">Nhân viên cần <b>mã doanh nghiệp</b> do ADMIN/người đứng đầu cung cấp. Mã này xác định chính xác doanh nghiệp mà tài khoản sẽ thuộc về.</div>
+      <form id="employeeForm">
+        <label>Họ tên nhân viên</label><input id="employeeName" placeholder="Nguyễn Văn A">
+        <label>Email</label><input id="employeeEmail" type="email" required placeholder="nhanvien@company.com">
+        <label>Mật khẩu</label><input id="employeePassword" type="password" minlength="6" required placeholder="Tối thiểu 6 ký tự">
+        <label>Mã doanh nghiệp</label><input id="leaderCode" required placeholder="Ví dụ: MS-7K4P-2R9X" style="text-transform:uppercase">
+        <button class="secondary wide" type="submit">Tạo tài khoản nhân viên</button>
+      </form>
+    </div>
+
+    <div id="adminPanel" class="auth-panel">
+      <div id="adminInfo" class="mini-note">Đang kiểm tra hệ thống...</div>
+      <form id="adminForm">
+        <label>Tên người quản trị</label><input id="adminName" placeholder="Nguyễn Văn B">
+        <label>Tên doanh nghiệp</label><input id="organizationName" required placeholder="Công ty ABC">
+        <label>Email ADMIN</label><input id="adminEmail" type="email" required placeholder="admin@company.com">
+        <label>Mật khẩu</label><input id="adminPassword" type="password" minlength="6" required placeholder="Tối thiểu 6 ký tự">
+        <div id="bootstrapField" class="hidden"><label>Mã cho phép tạo doanh nghiệp</label><input id="bootstrapCode" placeholder="ADMIN_BOOTSTRAP_CODE"></div>
+        <button id="createAdminBtn" class="primary wide" type="submit">Tạo doanh nghiệp & tài khoản ADMIN</button>
+      </form>
+      <div id="createdJoinCode" class="hidden"><div class="mini-note">Doanh nghiệp đã được tạo. Hãy lưu mã bên dưới và gửi cho nhân viên của doanh nghiệp này:</div><div id="joinCodeValue" class="code-preview"></div></div>
+    </div>
+  </div>
+  <div class="auth-foot">ADMIN chỉ xem nhân viên và dữ liệu thuộc doanh nghiệp của mình. Doanh nghiệp khác được cách ly bằng company_id.</div>
+</div>
+<script>
+const $=s=>document.querySelector(s), msg=$('#msg');
+function notify(text,ok=false){msg.textContent=text;msg.className='notice '+(ok?'success':'error')}
+function panel(which){const emp=which==='employee';$('#employeePanel').classList.toggle('active',emp);$('#adminPanel').classList.toggle('active',!emp);$('#showEmployee').classList.toggle('active',emp);$('#showAdmin').classList.toggle('active',!emp)}
+$('#showEmployee').onclick=()=>panel('employee'); $('#showAdmin').onclick=()=>panel('admin');
+async function adminStatus(){try{const r=await fetch('/api/auth/admin-status'),d=await r.json();const n=Number(d.company_count||0);$('#adminInfo').innerHTML=`<span class="tenant-chip">${n} doanh nghiệp đang dùng</span><br><br>Mỗi doanh nghiệp mới có thể tạo <b>ADMIN riêng</b> và nhận một mã nhân viên riêng. Dữ liệu giữa các doanh nghiệp không dùng chung.`;$('#bootstrapField').classList.toggle('hidden',!d.bootstrap_protected)}catch(e){$('#adminInfo').textContent='Không kiểm tra được trạng thái hệ thống.'}}
+adminStatus();
+$('#loginForm').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#loginEmail').value,password:$('#loginPassword').value})}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Đăng nhập thất bại');location.href=d.redirect||'/app'}catch(err){notify(err.message)}};
+$('#employeeForm').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:$('#employeeName').value,email:$('#employeeEmail').value,password:$('#employeePassword').value,leader_code:$('#leaderCode').value})}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Không thể tạo tài khoản');notify('Tạo tài khoản thành công. Doanh nghiệp: '+(d.organization||'đã xác nhận')+'. Hãy đăng nhập.',true);$('#loginEmail').value=$('#employeeEmail').value;window.scrollTo({top:0,behavior:'smooth'})}catch(err){notify(err.message)}};
+$('#adminForm').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/api/auth/register-admin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:$('#adminName').value,organization_name:$('#organizationName').value,email:$('#adminEmail').value,password:$('#adminPassword').value,bootstrap_code:$('#bootstrapCode').value})}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Không thể tạo doanh nghiệp');$('#createdJoinCode').classList.remove('hidden');$('#joinCodeValue').textContent=d.join_code;notify('Tạo doanh nghiệp thành công. Company ID: '+d.company_id+'. Hãy lưu mã nhân viên và đăng nhập.',true);$('#loginEmail').value=$('#adminEmail').value;$('#adminForm').reset()}catch(err){notify(err.message)}};
+</script>
+</body></html>

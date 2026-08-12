@@ -35,6 +35,24 @@ CANONICAL_SCHEMA = {
     "personality":          {"type": "string",  "required": True},
     "interest_keywords":    {"type": "string",  "required": True},
     "last_purchase_date":   {"type": "date",    "required": False},
+    # --- Customer Intelligence fields (optional, backward-compatible) ---
+    "order_count":          {"type": "numeric", "required": False},
+    "average_order_value":  {"type": "numeric", "required": False},
+    "discount_usage":       {"type": "numeric", "required": False},
+    "product_category":     {"type": "string",  "required": False},
+    "channel":              {"type": "string",  "required": False},
+    "device":               {"type": "string",  "required": False},
+    "acquisition_source":   {"type": "string",  "required": False},
+    "review_text":          {"type": "string",  "required": False},
+    # --- Enterprise behavioral / CRM fields (optional) ---
+    "monthly_income":        {"type": "numeric", "required": False},
+    "signup_date":           {"type": "date",    "required": False},
+    "return_count":          {"type": "numeric", "required": False},
+    "website_visits_30d":    {"type": "numeric", "required": False},
+    "email_open_rate":       {"type": "numeric", "required": False},
+    "cart_abandon_rate":     {"type": "numeric", "required": False},
+    "satisfaction_score":    {"type": "numeric", "required": False},
+    "loyalty_tier":          {"type": "category", "required": False},
 }
 
 REQUIRED_FIELDS = [k for k, v in CANONICAL_SCHEMA.items() if v["required"]]
@@ -56,6 +74,22 @@ CANONICAL_ALIASES = {
     "personality": ["personality", "tinh_cach", "character", "dac_diem", "tinh_cach_khach_hang"],
     "interest_keywords": ["interest", "so_thich", "tu_khoa_so_thich", "interests", "preferences", "mo_ta", "sthich", "hanh_vi"],
     "last_purchase_date": ["last_purchase_date", "ngay_mua_gan_nhat", "ngay_mua", "purchase_date", "ngay_dat_hang"],
+    "order_count": ["order_count", "so_don_hang", "so_lan_mua", "so_don", "orders", "number_of_orders"],
+    "average_order_value": ["average_order_value", "aov", "gia_tri_don_hang_tb", "chi_tieu_trung_binh_don", "avg_order_value"],
+    "discount_usage": ["discount_usage", "discount_rate", "ty_le_giam_gia", "muc_do_su_dung_khuyen_mai", "coupon_usage", "voucher_usage"],
+    "product_category": ["product_category", "category", "danh_muc_san_pham", "nhom_san_pham", "loai_san_pham"],
+    "channel": ["channel", "kenh", "kenh_mua_hang", "sales_channel", "purchase_channel", "preferred_channel", "kenh_uu_tien"],
+    "device": ["device", "thiet_bi", "device_type", "thiet_bi_su_dung"],
+    "acquisition_source": ["acquisition_source", "nguon_khach_hang", "nguon_tiep_can", "traffic_source", "source_channel"],
+    "review_text": ["review_text", "review", "danh_gia", "noi_dung_danh_gia", "feedback", "customer_feedback"],
+    "monthly_income": ["monthly_income", "monthly_income_vnd", "thu_nhap", "thu_nhap_thang", "income", "salary", "luong_thang"],
+    "signup_date": ["signup_date", "registration_date", "registered_at", "ngay_dang_ky", "ngay_tao_khach_hang", "customer_since"],
+    "return_count": ["return_count", "returns", "refund_count", "so_lan_hoan", "so_don_hoan", "so_lan_tra_hang"],
+    "website_visits_30d": ["website_visits_30d", "website_visits", "visits_30d", "luot_truy_cap_30d", "luot_truy_cap_web"],
+    "email_open_rate": ["email_open_rate", "open_rate", "ty_le_mo_email", "email_open"],
+    "cart_abandon_rate": ["cart_abandon_rate", "abandon_rate", "ty_le_bo_gio", "cart_abandon"],
+    "satisfaction_score": ["satisfaction_score", "satisfaction", "csat", "diem_hai_long", "muc_do_hai_long"],
+    "loyalty_tier": ["loyalty_tier", "member_tier", "vip_level", "hang_thanh_vien", "cap_do_thanh_vien"],
 }
 
 RULE_EXACT_CONFIDENCE = 0.97
@@ -92,7 +126,14 @@ def _rule_based_match(column_name: str):
             norm_alias = _normalize_column_name(alias)
             if len(norm_alias) < 3:
                 continue  # tranh khop nham voi alias qua ngan nhu "id", "job"
-            if norm_alias in norm_col or norm_col in norm_alias:
+            # Partial matching must be directional. A short source column such as
+            # "email" must NOT match the longer alias "email_open_rate" merely
+            # because it is a substring. We accept alias->column freely for useful
+            # suffixes (e.g. total_spending_vnd) and only accept column->alias when
+            # the source name itself is long/specific enough.
+            partial = norm_alias in norm_col
+            reverse_partial = norm_col in norm_alias and len(norm_col) >= 8 and (len(norm_alias)-len(norm_col) <= 8)
+            if partial or reverse_partial:
                 if len(norm_alias) > best_len:
                     best_field, best_alias, best_len = field, alias, len(norm_alias)
 

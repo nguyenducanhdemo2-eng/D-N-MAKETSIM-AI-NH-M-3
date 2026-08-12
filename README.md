@@ -1,1 +1,0 @@
-# D-N-MAKETSIM-AI-NH-M-3
