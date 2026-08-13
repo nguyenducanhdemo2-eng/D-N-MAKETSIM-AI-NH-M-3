@@ -1,4 +1,3 @@
-
 import asyncio, json, uuid, math, re, time
 from pathlib import Path
 import pandas as pd
@@ -682,8 +681,8 @@ def customer_dataset_history(req:Request):
 async def collect_trends(req:Request):
     current_user(req)
     try:
-        from data_collector import fetch_pytrends
-        trends=fetch_pytrends()
+        from data_collector import fetch_google_trends
+        trends=fetch_google_trends()
         rows=[] if trends is None or trends.empty else trends.to_dict('records')
         return json_safe({'ok':True,'items':rows,'count':len(rows),'source':'Pytrends','message':('Đã thu thập dữ liệu bằng Pytrends.' if rows else 'Pytrends chưa trả dữ liệu. Có thể nguồn đang giới hạn truy cập hoặc từ khóa chưa đủ dữ liệu.')})
     except Exception as e:
