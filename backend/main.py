@@ -1,3 +1,4 @@
+
 import asyncio, json, uuid, math, re, time
 from pathlib import Path
 import pandas as pd
@@ -268,25 +269,29 @@ def register(b:EmployeeRegister):
     if not admin:
         raise HTTPException(400,'Mã tham gia doanh nghiệp không đúng hoặc đã hết hiệu lực. Hãy sao chép lại mã mới nhất từ ADMIN.')
     uid=None
+    membership=None
+    before_ids={int(x['id']) for x in admin_staff(admin['id'])}
     try:
         uid=create_user(b.email,b.password)
         membership=attach_employee(uid,admin['id'],b.display_name)
-        # Do not report success until the same membership is visible through the
-        # ADMIN-facing data path. This catches partially migrated databases early.
+        # Verify the new account AND prove that no previously visible employee
+        # disappeared as a side effect of this registration.
         if not employee_visible_to_admin(admin['id'], uid):
             raise ValueError('Tài khoản chưa được thêm vào danh sách nhân viên của doanh nghiệp. Hệ thống đã hủy thao tác; vui lòng thử lại.')
+        current_staff=admin_staff(admin['id'])
+        current_ids={int(x['id']) for x in current_staff}
+        if int(uid) not in current_ids or not before_ids.issubset(current_ids):
+            raise ValueError('Danh sách nhân viên thay đổi bất thường sau khi đăng ký. Hệ thống đã hủy tài khoản mới để bảo toàn nhân viên cũ.')
         record_activity(uid,'Tạo tài khoản nhân viên','/api/auth/register','POST',200,f"Gia nhập {admin.get('organization_name','doanh nghiệp')} · company_id={membership.get('company_id')}")
     except Exception as e:
-        # Do not leave an orphan account that blocks the employee from retrying
-        # when membership attachment failed after create_user succeeded.
+        # Remove only the account created by THIS request. Never delete or update
+        # any pre-existing employee when a new employee registration fails.
         if uid:
             try:
                 import sqlite3
                 with sqlite3.connect(config.DB_PATH) as c:
-                    # If the attach step failed, remove only the just-created account
-                    # and its membership mirror. Existing accounts are never touched.
                     c.execute("DELETE FROM company_memberships WHERE user_id=?",(int(uid),))
-                    c.execute("DELETE FROM users WHERE id=? AND role='employee'",(int(uid),))
+                    c.execute("DELETE FROM users WHERE id=? AND email=? AND role='employee'",(int(uid),(b.email or '').strip().lower()))
                     c.commit()
             except Exception:
                 pass
@@ -298,7 +303,8 @@ def register(b:EmployeeRegister):
         'organization':membership.get('organization_name') or admin.get('organization_name'),
         'join_code':admin.get('join_code'),
         'membership_verified':True,
-        'message':'Tài khoản đã được thêm vào danh sách nhân viên của doanh nghiệp.',
+        'staff_count':len(current_staff),
+        'message':'Tài khoản đã được thêm vào danh sách nhân viên của doanh nghiệp mà không thay thế nhân viên cũ.',
     }
 
 @app.post('/api/auth/register-admin')
@@ -681,8 +687,8 @@ def customer_dataset_history(req:Request):
 async def collect_trends(req:Request):
     current_user(req)
     try:
-        from data_collector import fetch_google_trends
-        trends=fetch_google_trends()
+        from data_collector import fetch_pytrends
+        trends=fetch_pytrends()
         rows=[] if trends is None or trends.empty else trends.to_dict('records')
         return json_safe({'ok':True,'items':rows,'count':len(rows),'source':'Pytrends','message':('Đã thu thập dữ liệu bằng Pytrends.' if rows else 'Pytrends chưa trả dữ liệu. Có thể nguồn đang giới hạn truy cập hoặc từ khóa chưa đủ dữ liệu.')})
     except Exception as e:

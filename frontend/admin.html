@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MarketSim AI — Quản trị doanh nghiệp</title>
   <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/admin.css?v=20260813-employee-link-fix-2">
+  <link rel="stylesheet" href="/static/css/admin.css?v=20260813-admin-membership-tabs-3">
 </head>
 <body>
 <div class="admin-app">
@@ -29,7 +29,7 @@
       <div class="admin-kpi-grid">
         <article class="admin-kpi"><span>Nhân viên</span><b id="kStaff">0</b><small id="kActive">0 đang hoạt động</small></article>
         <article class="admin-kpi"><span>Dự án marketing</span><b id="kProjects">0</b><small>Toàn doanh nghiệp</small></article>
-        <article class="admin-kpi"><span>Dữ liệu khách hàng</span><b id="kCustomers">0</b><small id="kBộ dữ liệus">0 bộ dữ liệu</small></article>
+        <article class="admin-kpi"><span>Dữ liệu khách hàng</span><b id="kCustomers">0</b><small id="kDatasets">0 bộ dữ liệu</small></article>
         <article class="admin-kpi"><span>Khách hàng ảo</span><b id="kTwins">0</b><small id="kPersonas">0 persona</small></article>
         <article class="admin-kpi"><span>Lượt phản hồi mô phỏng</span><b id="kResponses">0</b><small id="kScore">Điểm TB 0/10</small></article>
         <article class="admin-kpi"><span>AI đã phân tích đã xác nhận</span><b id="kLearning">0</b><small id="kReal">REAL 0%</small></article>
@@ -41,7 +41,7 @@
       </div>
 
       <div class="admin-grid-2">
-        <article class="admin-card"><div class="card-title"><div><h3>Dữ liệu mới nhất</h3><p>Các file khách hàng được tải lên gần đây.</p></div></div><div id="recentBộ dữ liệus" class="simple-list"></div></article>
+        <article class="admin-card"><div class="card-title"><div><h3>Dữ liệu mới nhất</h3><p>Các file khách hàng được tải lên gần đây.</p></div></div><div id="recentDatasets" class="simple-list"></div></article>
         <article class="admin-card"><div class="card-title"><div><h3>Dự án mới nhất</h3><p>Các chiến dịch marketing nhân viên đã phân tích.</p></div></div><div id="recentProjects" class="simple-list"></div></article>
       </div>
     </section>
@@ -55,7 +55,7 @@
       <div id="staffDetail" class="admin-card hidden staff-detail"></div>
     </section>
 
-    <section id="view-data" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Bộ dữ liệu</span><b id="dataBộ dữ liệus">0</b></article><article class="metric-block"><span>Khách hàng đã lưu</span><b id="dataCustomers">0</b></article><article class="metric-block"><span>AI đã phân tích xác nhận</span><b id="dataLearning">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dữ liệu gần đây</h3><p>File, người tải và số lượng bản ghi.</p></div></div><div id="dataList" class="simple-list"></div></div></section>
+    <section id="view-data" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Bộ dữ liệu</span><b id="dataDatasets">0</b></article><article class="metric-block"><span>Khách hàng đã lưu</span><b id="dataCustomers">0</b></article><article class="metric-block"><span>AI đã phân tích xác nhận</span><b id="dataLearning">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dữ liệu gần đây</h3><p>File, người tải và số lượng bản ghi.</p></div></div><div id="dataList" class="simple-list"></div></div></section>
 
     <section id="view-projects" class="admin-view"><div class="admin-grid-3"><article class="metric-block"><span>Dự án</span><b id="projectCount">0</b></article><article class="metric-block"><span>Khách hàng ảo</span><b id="projectTwins">0</b></article><article class="metric-block"><span>Điểm phản ứng TB</span><b id="projectScore">0</b></article></div><div class="admin-card"><div class="card-title"><div><h3>Dự án marketing gần đây</h3><p>Người thực hiện và mức đánh giá mô phỏng.</p></div></div><div id="projectList" class="simple-list"></div></div></section>
 
@@ -65,5 +65,5 @@
   </main>
 </div>
 <div id="adminToast" class="toast"></div>
-<script src="/static/js/admin.js?v=20260813-employee-link-fix-2"></script>
+<script src="/static/js/admin.js?v=20260813-admin-membership-tabs-3"></script>
 </body></html>

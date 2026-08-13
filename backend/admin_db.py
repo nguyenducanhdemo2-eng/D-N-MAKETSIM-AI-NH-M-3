@@ -172,6 +172,7 @@ def init_admin_schema():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_users_admin_owner ON users(admin_owner_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_users_company ON users(company_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_users_company_role_created ON users(company_id, role, created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_activity_user_created ON activity_logs(user_id, created_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_company_memberships_company ON company_memberships(company_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_company_memberships_admin ON company_memberships(admin_id)")
@@ -337,7 +338,12 @@ def _sync_employee_membership(c: sqlite3.Connection, user_id: int) -> dict | Non
 
 
 def employee_visible_to_admin(admin_id: int, user_id: int) -> bool:
-    """True only when the employee is durably linked to this ADMIN's company."""
+    """True only when both authoritative tenant fields point to this ADMIN.
+
+    `users.company_id` is the source of truth. `company_memberships` is a durable
+    mirror used for recovery/auditing, never a rotating slot list. This makes
+    the check independent of how many employees the company already has.
+    """
     init_admin_schema()
     company = _admin_company(admin_id)
     if not company:
@@ -349,14 +355,11 @@ def employee_visible_to_admin(admin_id: int, user_id: int) -> bool:
         row = c.execute("""
             SELECT 1
             FROM users u
-            LEFT JOIN company_memberships m ON m.user_id=u.id
+            JOIN company_memberships m ON m.user_id=u.id
             WHERE u.id=? AND u.role='employee'
-              AND (
-                    m.company_id=?
-                    OR u.company_id=?
-                    OR (u.company_id IS NULL AND u.admin_owner_id=?)
-                  )
-        """, (int(user_id), company_id, company_id, int(admin_id))).fetchone()
+              AND u.company_id=? AND u.admin_owner_id=?
+              AND m.company_id=? AND m.admin_id=?
+        """, (int(user_id), company_id, int(admin_id), company_id, int(admin_id))).fetchone()
         c.commit()
         return bool(row)
 
@@ -393,7 +396,12 @@ def repair_company_memberships(admin_id: int) -> dict:
 
 
 def attach_employee(user_id: int, admin_id: int, display_name: str = '') -> dict:
-    """Attach one employee and verify that the ADMIN can see the membership before success."""
+    """Attach one employee without replacing any existing company member.
+
+    There is deliberately no employee-capacity limit. The operation updates only
+    the new/current `user_id`, then verifies that the company's pre-existing
+    employee IDs are still present before committing.
+    """
     init_admin_schema()
     company = _admin_company(admin_id)
     if not company or not int(company.get("is_active") or 0):
@@ -414,6 +422,13 @@ def attach_employee(user_id: int, admin_id: int, display_name: str = '') -> dict
             if current["role"] == "admin":
                 raise ValueError("Tài khoản quản trị viên không thể đăng ký lại dưới vai trò nhân viên.")
 
+            # Snapshot the existing team. No later statement in this transaction
+            # is allowed to make one of these IDs disappear from the company.
+            existing_ids = {int(r[0]) for r in c.execute(
+                "SELECT id FROM users WHERE company_id=? AND role='employee' AND id!=?",
+                (company_id, int(user_id)),
+            ).fetchall()}
+
             c.execute("""
                 UPDATE users
                 SET role='employee', admin_owner_id=?, company_id=?, display_name=?, is_active=1
@@ -430,6 +445,13 @@ def attach_employee(user_id: int, admin_id: int, display_name: str = '') -> dict
             """, (int(user_id), company_id, int(admin_id))).fetchone()
             if not visible:
                 raise ValueError("Tài khoản đã tạo nhưng chưa được thêm vào danh sách nhân viên. Hệ thống đã hủy thao tác để tránh dữ liệu lệch.")
+
+            after_ids = {int(r[0]) for r in c.execute(
+                "SELECT id FROM users WHERE company_id=? AND role='employee'",
+                (company_id,),
+            ).fetchall()}
+            if int(user_id) not in after_ids or not existing_ids.issubset(after_ids):
+                raise ValueError("Phát hiện danh sách nhân viên bị thay đổi ngoài dự kiến. Hệ thống đã hủy đăng ký để bảo toàn nhân viên cũ.")
 
             c.commit()
         except Exception:
@@ -680,18 +702,16 @@ def admin_team_health(admin_id: int) -> dict[str, Any]:
             if after is not None and (before is None or tuple(before) != tuple(after)):
                 synced += 1
 
+        # company_id is authoritative; this count has no LIMIT and therefore
+        # cannot drop an older employee when a new one joins.
         total = int(c.execute("""
-            SELECT COUNT(DISTINCT u.id)
-            FROM users u LEFT JOIN company_memberships m ON m.user_id=u.id
-            WHERE u.role='employee'
-              AND (m.company_id=? OR u.company_id=? OR (u.company_id IS NULL AND u.admin_owner_id=?))
-        """, (company_id, company_id, int(admin_id))).fetchone()[0] or 0)
+            SELECT COUNT(*) FROM users
+            WHERE role='employee' AND company_id=?
+        """, (company_id,)).fetchone()[0] or 0)
         active = int(c.execute("""
-            SELECT COUNT(DISTINCT u.id)
-            FROM users u LEFT JOIN company_memberships m ON m.user_id=u.id
-            WHERE u.role='employee' AND u.is_active=1
-              AND (m.company_id=? OR u.company_id=? OR (u.company_id IS NULL AND u.admin_owner_id=?))
-        """, (company_id, company_id, int(admin_id))).fetchone()[0] or 0)
+            SELECT COUNT(*) FROM users
+            WHERE role='employee' AND company_id=? AND is_active=1
+        """, (company_id,)).fetchone()[0] or 0)
         legacy_unlinked = int(c.execute("""
             SELECT COUNT(*) FROM users
             WHERE role='employee' AND company_id IS NULL AND admin_owner_id=?
@@ -742,25 +762,18 @@ def admin_staff(admin_id: int) -> list[dict]:
         c.commit()
 
         rows = c.execute("""
-            SELECT DISTINCT
+            SELECT
               u.id,u.email,u.display_name,u.created_at,u.is_active,
-              COALESCE(m.company_id,u.company_id) AS company_id,
-              COALESCE(m.admin_id,u.admin_owner_id) AS admin_owner_id,
+              u.company_id,u.admin_owner_id,
               (SELECT COUNT(*) FROM uploaded_datasets d WHERE d.user_id=u.id) datasets,
               (SELECT COALESCE(SUM(d.record_count),0) FROM uploaded_datasets d WHERE d.user_id=u.id) uploaded_records,
               (SELECT COUNT(*) FROM scenarios s WHERE s.user_id=u.id) projects,
               (SELECT COUNT(*) FROM simulation_results r JOIN scenarios s ON s.id=r.scenario_id WHERE s.user_id=u.id) responses,
               (SELECT MAX(a.created_at) FROM activity_logs a WHERE a.user_id=u.id) last_activity
             FROM users u
-            LEFT JOIN company_memberships m ON m.user_id=u.id
-            WHERE u.role='employee'
-              AND (
-                    m.company_id=?
-                    OR u.company_id=?
-                    OR (u.company_id IS NULL AND u.admin_owner_id=?)
-                  )
+            WHERE u.role='employee' AND u.company_id=?
             ORDER BY u.id DESC
-        """, (company_id, company_id, int(admin_id))).fetchall()
+        """, (company_id,)).fetchall()
         return [dict(r) for r in rows]
 
 
