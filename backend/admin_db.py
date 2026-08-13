@@ -271,37 +271,144 @@ def _admin_company(admin_id: int) -> dict | None:
         return dict(r) if r else None
 
 
+def _canonicalize_company_join_code(c: sqlite3.Connection, company_row: sqlite3.Row | dict) -> dict:
+    """Return a company row with a canonical join code and safely repair dirty formatting.
+
+    Older/local databases can contain a visually correct code with Unicode dashes,
+    spaces or lower-case characters. The login form normalizes what the employee
+    types, so comparing that normalized input to the raw stored string can produce
+    a false "code does not exist" result.  This helper makes the DB representation
+    canonical (MS-XXXX-XXXX) when doing so cannot collide with another company.
+    """
+    row = dict(company_row)
+    stored = str(row.get('join_code') or '')
+    canonical = normalize_join_code(stored)
+    if not canonical:
+        return row
+    if canonical != stored:
+        company_id = int(row['company_id'])
+        owner_admin_id = int(row['id'])
+        conflict = c.execute(
+            "SELECT id FROM companies WHERE UPPER(join_code)=? AND id!=?",
+            (canonical, company_id),
+        ).fetchone()
+        profile_conflict = c.execute(
+            "SELECT admin_user_id FROM admin_profiles WHERE UPPER(join_code)=? AND admin_user_id!=?",
+            (canonical, owner_admin_id),
+        ).fetchone()
+        if not conflict and not profile_conflict:
+            c.execute(
+                "UPDATE companies SET join_code=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (canonical, company_id),
+            )
+            # Keep the compatibility profile synchronized only for the SAME ADMIN.
+            c.execute(
+                "UPDATE admin_profiles SET join_code=?,updated_at=CURRENT_TIMESTAMP WHERE admin_user_id=?",
+                (canonical, owner_admin_id),
+            )
+            row['join_code'] = canonical
+    return row
+
+
+def _company_rows_for_join_lookup(c: sqlite3.Connection) -> list[sqlite3.Row]:
+    return c.execute("""
+        SELECT u.id,u.email,u.display_name,c.id AS company_id,c.organization_name,c.join_code,
+               c.owner_admin_id,c.is_active
+        FROM companies c
+        JOIN users u ON u.id=c.owner_admin_id
+        WHERE c.is_active=1 AND u.role='admin' AND COALESCE(u.is_active,1)=1
+        ORDER BY c.id
+    """).fetchall()
+
+
+def _migrate_legacy_profile_for_join_code(c: sqlite3.Connection, code: str) -> dict | None:
+    """Recover a legacy ADMIN profile that has no companies row yet.
+
+    We never accept a stale admin_profiles code when the ADMIN already owns a
+    company, because a regenerated old code must stay invalid.  This path is only
+    for genuinely unmigrated installations.
+    """
+    rows = c.execute("""
+        SELECT p.admin_user_id AS id,u.email,u.display_name,p.organization_name,p.join_code,u.company_id
+        FROM admin_profiles p
+        JOIN users u ON u.id=p.admin_user_id
+        LEFT JOIN companies co ON co.owner_admin_id=p.admin_user_id
+        WHERE co.id IS NULL AND u.role='admin' AND COALESCE(u.is_active,1)=1
+        ORDER BY p.admin_user_id
+    """).fetchall()
+    for legacy in rows:
+        if normalize_join_code(legacy['join_code']) != code:
+            continue
+        canonical = normalize_join_code(legacy['join_code']) or code
+        conflict = c.execute("SELECT id FROM companies WHERE UPPER(join_code)=?", (canonical,)).fetchone()
+        if conflict:
+            return None
+        cur = c.execute("""
+            INSERT INTO companies(organization_name,join_code,owner_admin_id,is_active)
+            VALUES(?,?,?,1)
+        """, (legacy['organization_name'] or 'Doanh nghiệp của tôi', canonical, int(legacy['id'])))
+        company_id = int(cur.lastrowid)
+        c.execute("UPDATE users SET company_id=? WHERE id=?", (company_id, int(legacy['id'])))
+        c.execute("""
+            UPDATE users SET company_id=?
+            WHERE role='employee' AND admin_owner_id=? AND company_id IS NULL
+        """, (company_id, int(legacy['id'])))
+        c.execute(
+            "UPDATE admin_profiles SET join_code=?,updated_at=CURRENT_TIMESTAMP WHERE admin_user_id=?",
+            (canonical, int(legacy['id'])),
+        )
+        _reconcile_memberships(c)
+        r = c.execute("""
+            SELECT u.id,u.email,u.display_name,c.id AS company_id,c.organization_name,c.join_code,
+                   c.owner_admin_id,c.is_active
+            FROM companies c JOIN users u ON u.id=c.owner_admin_id
+            WHERE c.id=?
+        """, (company_id,)).fetchone()
+        return dict(r) if r else None
+    return None
+
+
 def find_admin_by_join_code(join_code: str) -> dict | None:
+    """Resolve a join code without false negatives from formatting/legacy rows.
+
+    Security rule: the active companies.join_code remains the source of truth.
+    A legacy admin_profiles code is considered only when that ADMIN does not yet
+    own a companies row, so regenerating a code still invalidates the old code.
+    """
     init_admin_schema()
     code = normalize_join_code(join_code)
     if not code:
         return None
     with _conn() as c:
         _reconcile_memberships(c)
+
+        # Fast path for normal databases.
         r = c.execute("""
-            SELECT u.id,u.email,u.display_name,c.id AS company_id,c.organization_name,c.join_code
+            SELECT u.id,u.email,u.display_name,c.id AS company_id,c.organization_name,c.join_code,
+                   c.owner_admin_id,c.is_active
             FROM companies c JOIN users u ON u.id=c.owner_admin_id
-            WHERE UPPER(c.join_code)=? AND c.is_active=1 AND u.role='admin' AND u.is_active=1
+            WHERE UPPER(c.join_code)=? AND c.is_active=1
+              AND u.role='admin' AND COALESCE(u.is_active,1)=1
         """, (code,)).fetchone()
         if r:
+            result = _canonicalize_company_join_code(c, r)
             c.commit()
-            return dict(r)
+            return result
 
-        # Backward compatibility for installations that still have an older
-        # admin_profiles row but have not completed the companies migration yet.
-        legacy = c.execute("""
-            SELECT p.admin_user_id AS id,u.email,u.display_name,p.organization_name,p.join_code,u.company_id
-            FROM admin_profiles p JOIN users u ON u.id=p.admin_user_id
-            WHERE UPPER(p.join_code)=? AND u.role='admin' AND u.is_active=1
-        """, (code,)).fetchone()
-        if legacy:
-            # init_admin_schema normally creates this tenant. Run it once more
-            # outside the current connection on the next call rather than
-            # guessing/moving a member here.
-            c.commit()
-            return dict(legacy)
+        # Robust path: normalize the stored value too. This fixes codes copied
+        # from a DB that contains Unicode dashes/spaces/lower-case formatting.
+        for row in _company_rows_for_join_lookup(c):
+            if normalize_join_code(row['join_code']) == code:
+                result = _canonicalize_company_join_code(c, row)
+                c.commit()
+                return result
+
+        # Last resort for a genuinely old DB that has admin_profiles but no
+        # companies row for that ADMIN. Migrate it immediately so registration
+        # and ADMIN views use one consistent tenant source afterwards.
+        migrated = _migrate_legacy_profile_for_join_code(c, code)
         c.commit()
-        return None
+        return migrated
 
 
 

@@ -2,9 +2,18 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR/'.env')
-DB_PATH = os.getenv('MARKETSIM_DB_PATH', str(BASE_DIR/'marketsim.db'))
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = PROJECT_DIR
+load_dotenv(PROJECT_DIR/'.env')
+_db_path_env = os.getenv('MARKETSIM_DB_PATH','').strip()
+_data_dir_env = os.getenv('MARKETSIM_DATA_DIR','').strip()
+if _db_path_env:
+    _candidate = Path(_db_path_env).expanduser()
+    DB_PATH = str(_candidate if _candidate.is_absolute() else (PROJECT_DIR / _candidate).resolve())
+elif _data_dir_env:
+    DB_PATH = str((Path(_data_dir_env).expanduser() / 'marketsim.db').resolve())
+else:
+    DB_PATH = str(PROJECT_DIR/'marketsim.db')
 TREND_KEYWORDS = [x.strip() for x in os.getenv('TREND_KEYWORDS','thời trang,công nghệ,ẩm thực,du lịch,làm đẹp').split(',') if x.strip()]
 NEWS_URLS = [x.strip() for x in os.getenv('NEWS_URLS','https://vnexpress.net/kinh-doanh,https://cafef.vn').split(',') if x.strip()]
 TRENDS_TIMEFRAME=os.getenv('TRENDS_TIMEFRAME','now 7-d'); TRENDS_GEO=os.getenv('TRENDS_GEO','VN')
