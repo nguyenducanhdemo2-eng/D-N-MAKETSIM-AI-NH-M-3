@@ -29,7 +29,7 @@ def _num(t, *keys):
         except Exception: pass
     return None
 
-def simulate_twins(twins_df: pd.DataFrame, campaign_text: str, seed: int=42, use_llm: bool=False, ollama_fn=None) -> dict:
+def simulate_twins(twins_df: pd.DataFrame, campaign_text: str, seed: int=42, use_llm: bool=False, ollama_fn=None, calibration: dict | None=None) -> dict:
     if twins_df is None or twins_df.empty:
         return {"status":"empty", "results":pd.DataFrame(), "summary":{}}
     spec = parse_campaign(campaign_text)
@@ -60,7 +60,10 @@ def simulate_twins(twins_df: pd.DataFrame, campaign_text: str, seed: int=42, use
         base += 0.03*spec["free_shipping"]
         if spec["premium"] and loyalty is not None: base += 0.04*loyalty
         # Small bounded noise gives population variation, seeded for reproducibility.
-        conversion = _clip(base + rng.normal(0,0.025))
+        raw_conversion = _clip(base + rng.normal(0,0.025))
+        factor=float((calibration or {}).get('factor',1.0))
+        offset=float((calibration or {}).get('offset',0.0))
+        conversion=_clip(factor*raw_conversion+offset)
         click = _clip(conversion + 0.10 + rng.normal(0,0.015))
         purchase_intent = _clip(conversion + 0.08)
         revenue = spend*(1-disc)*conversion
@@ -69,20 +72,22 @@ def simulate_twins(twins_df: pd.DataFrame, campaign_text: str, seed: int=42, use
         rows.append({
             "twin_id": t.get("twin_id"), "segment_id": t.get("segment_id"),
             "conversion_probability": round(conversion,4), "click_probability": round(click,4),
+            "raw_conversion_probability": round(raw_conversion,4),
             "purchase_intent": round(purchase_intent,4), "expected_revenue": round(revenue,2),
             "sentiment": sentiment, "score": score,
             "discount_pct": spec["discount_pct"], "campaign": campaign_text,
-            "model_version":"heuristic_v1", "prediction_type":"modelled_estimate",
+            "model_version":"heuristic_v1_calibrated" if calibration and (factor!=1.0 or offset!=0.0) else "heuristic_v1",
+            "prediction_type":"modelled_estimate",
         })
     df=pd.DataFrame(rows)
-    summary={"population":len(df),"conversion_rate":float(df.conversion_probability.mean()),"click_rate":float(df.click_probability.mean()),"purchase_intent":float(df.purchase_intent.mean()),"expected_revenue":float(df.expected_revenue.sum()),"discount_pct":spec["discount_pct"]}
+    summary={"population":len(df),"conversion_rate":float(df.conversion_probability.mean()),"click_rate":float(df.click_probability.mean()),"purchase_intent":float(df.purchase_intent.mean()),"expected_revenue":float(df.expected_revenue.sum()),"discount_pct":spec["discount_pct"],"calibration":calibration or {"factor":1.0,"offset":0.0}}
     return {"status":"ok","results":df,"summary":summary,"campaign_spec":spec,"note":"Ước tính mô hình, chưa calibration."}
 
-def paired_compare(twins_df: pd.DataFrame, campaigns: list[str], seed:int=42) -> dict:
+def paired_compare(twins_df: pd.DataFrame, campaigns: list[str], seed:int=42, calibration: dict | None=None) -> dict:
     outputs=[]
     per_campaign={}
     for i,c in enumerate(campaigns):
-        r=simulate_twins(twins_df,c,seed=seed)
+        r=simulate_twins(twins_df,c,seed=seed,calibration=calibration)
         if r["status"]!="ok": continue
         per_campaign[c]=r
         s=r["summary"].copy(); s["campaign"]=c; outputs.append(s)
@@ -95,13 +100,13 @@ def paired_compare(twins_df: pd.DataFrame, campaigns: list[str], seed:int=42) ->
 def _candidate_message(discount, channel):
     return f"Ưu đãi {discount:.0f}% trên {channel}: mua ngay hôm nay, sản phẩm phù hợp nhu cầu khách hàng."
 
-def optimize_marketing(twins_df: pd.DataFrame, budget: float, discount_options=None, channel_options=None, message_options=None) -> dict:
+def optimize_marketing(twins_df: pd.DataFrame, budget: float, discount_options=None, channel_options=None, message_options=None, calibration: dict | None=None) -> dict:
     if twins_df is None or twins_df.empty: return {"status":"empty","candidates":pd.DataFrame()}
     budget=float(max(0,budget)); discounts=discount_options or [0,10,20,30,40]; channels=channel_options or CHANNELS[:4]
     rows=[]
     for d,ch in product(discounts,channels):
         campaign=_candidate_message(d,ch)
-        sim=simulate_twins(twins_df,campaign,seed=42)
+        sim=simulate_twins(twins_df,campaign,seed=42,calibration=calibration)
         s=sim["summary"]
         revenue_per_1000=float(s["expected_revenue"])/max(1,len(twins_df))*1000.0
         cost_per_1000=(budget/max(1,len(twins_df)))*1000.0 if budget>0 else 0.0

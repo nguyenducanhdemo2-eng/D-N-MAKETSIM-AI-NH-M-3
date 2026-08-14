@@ -115,6 +115,7 @@ def init_admin_schema():
             ("display_name", "TEXT"),
             ("is_active", "INTEGER NOT NULL DEFAULT 1"),
             ("company_id", "INTEGER"),
+            ("ai_provider", "TEXT NOT NULL DEFAULT 'groq'"),
         ]
         for name, definition in migrations:
             if name not in user_cols:
@@ -253,7 +254,7 @@ def get_account(user_id: int) -> dict | None:
     init_admin_schema()
     with _conn() as c:
         r = c.execute("""
-            SELECT id,email,created_at,role,admin_owner_id,display_name,is_active,company_id
+            SELECT id,email,created_at,role,admin_owner_id,display_name,is_active,company_id,ai_provider
             FROM users WHERE id=?
         """, (int(user_id),)).fetchone()
         return dict(r) if r else None
@@ -613,10 +614,10 @@ def make_first_admin(user_id: int, display_name: str = '', organization_name: st
 
 
 def bootstrap_code_valid(value: str | None) -> bool:
-    """Optional deployment guard for creating a new business ADMIN account."""
-    expected = os.getenv('ADMIN_BOOTSTRAP_CODE', '').strip()
-    if not expected:
-        return True
+    """Require the deployment secret before creating any business ADMIN."""
+    expected = config.ADMIN_BOOTSTRAP_CODE
+    if len(expected)<16:
+        return False
     return secrets.compare_digest(expected, (value or '').strip())
 
 
@@ -628,6 +629,29 @@ def require_admin_account(user_id: int) -> dict:
     if not company or not int(company.get('is_active') or 0):
         raise PermissionError("Doanh nghiệp của tài khoản ADMIN không hoạt động.")
     return a
+
+
+def require_employee_account(user_id: int) -> dict:
+    """Reject ADMIN accounts from every employee/business-workspace API."""
+    account=get_account(user_id)
+    if not account or account.get('role')!='employee' or not int(account.get('is_active') or 0):
+        raise PermissionError('Bạn không có quyền sử dụng khu vực nhân viên.')
+    if account.get('company_id') is None:
+        raise PermissionError('Tài khoản nhân viên chưa thuộc doanh nghiệp nào. Hãy liên hệ ADMIN.')
+    return account
+
+
+def set_user_ai_provider(user_id: int, provider: str) -> str:
+    """Persist an AI provider per account; never mutate a process-global setting."""
+    provider=str(provider or '').strip().lower()
+    if provider not in ('groq','ollama'):
+        raise ValueError('Provider phải là groq hoặc ollama.')
+    with _conn() as c:
+        cur=c.execute('UPDATE users SET ai_provider=? WHERE id=?',(provider,int(user_id)))
+        if not cur.rowcount:
+            raise ValueError('Không tìm thấy tài khoản.')
+        c.commit()
+    return provider
 
 
 def get_admin_profile(admin_id: int) -> dict | None:

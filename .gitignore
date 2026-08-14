@@ -1,0 +1,32 @@
+# Secrets and local runtime configuration
+.env
+.env.*
+!.env.example
+
+# Runtime databases and SQLite sidecar files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local uploads, exports, and logs
+uploads/
+exports/
+*.log
+

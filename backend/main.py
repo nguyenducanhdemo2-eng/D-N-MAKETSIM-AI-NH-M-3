@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, Request, Response, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import config
@@ -19,13 +19,15 @@ from advanced_simulation import simulate_twins, paired_compare, optimize_marketi
 from .auth_db import init_auth, create_session, get_user, delete_session
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
     employee_visible_to_admin, repair_company_memberships,
-    create_company_admin, bootstrap_code_valid, require_admin_account, get_admin_profile, regenerate_join_code,
+    create_company_admin, bootstrap_code_valid, require_admin_account, require_employee_account,
+    get_admin_profile, regenerate_join_code, set_user_ai_provider,
     admin_overview, admin_staff, admin_employee_detail, admin_activity, admin_team_health, set_employee_active,
     normalize_join_code, record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
 from .ai_provider import check_all, check_groq, check_ollama, chat
 from .ai_bridge import call_text
 from staged_data_workflow import inspect_dataframe, apply_learned_fields, build_audit
 from data_quality_engine import detect_possible_duplicates, sanitize_canonical, derive_real_features, data_drift
+from .security import enforce_rate_limit, rate_limiter, read_upload_limited
 
 BASE_DIR=Path(__file__).resolve().parent.parent; FRONTEND=BASE_DIR/'frontend'
 app=FastAPI(title='MarketSim AI',version='Final Cloud')
@@ -35,6 +37,7 @@ persona_jobs={}
 latest_state={}
 staged_sessions={}
 staged_learning_jobs={}
+_ephemeral_created={}
 
 
 # Simulation transport optimization only.
@@ -127,7 +130,7 @@ def startup():
     # then init_db backfills tenant ownership onto business records.
     init_db(); init_auth(); init_admin_schema(); init_db(); mark_interrupted_background_jobs()
 
-def current_user(req):
+def current_account(req):
     u=get_user(req.cookies.get(config.SESSION_COOKIE))
     if not u: raise HTTPException(401,'Bạn chưa đăng nhập.')
     account=get_account(u['id'])
@@ -135,23 +138,61 @@ def current_user(req):
         raise HTTPException(403,'Tài khoản đã bị vô hiệu hóa.')
     return account
 
+def current_user(req):
+    """Backward-compatible name for the employee-only workspace guard."""
+    account=current_account(req)
+    try:
+        require_employee_account(account['id'])
+    except PermissionError as e:
+        raise HTTPException(403,str(e))
+    return account
+
 def current_admin(req):
-    u=current_user(req)
+    u=current_account(req)
     try:
         require_admin_account(u['id'])
     except PermissionError as e:
         raise HTTPException(403,str(e))
     return u
 
+def _provider_for(account: dict) -> str:
+    provider=str(account.get('ai_provider') or config.AI_PROVIDER).lower().strip()
+    return provider if provider in ('groq','ollama') else 'groq'
+
+def _user_rate_limit(account: dict, bucket: str, limit: int, window_seconds: int):
+    rate_limiter.check(f"{bucket}:user:{int(account['id'])}",limit,window_seconds)
+
 
 def _job_register(store: dict, job_id: str, user: dict, job_type: str, initial: dict, payload: dict | None = None):
     """Register an in-memory job plus durable ownership/status metadata."""
+    _prune_job_store(store)
     item=dict(initial or {})
     item['user_id']=int(user['id'])
     item['company_id']=user.get('company_id')
     store[job_id]=item
+    _ephemeral_created[job_id]=time.monotonic()
     create_background_job(job_id,int(user['id']),user.get('company_id'),job_type,payload or {})
     return item
+
+def _prune_job_store(store: dict):
+    now=time.monotonic()
+    removable=[]
+    for job_id,item in store.items():
+        age=now-_ephemeral_created.get(job_id,now)
+        if item.get('status') not in ('running','queued') and age>config.IN_MEMORY_RESULT_TTL_SECONDS:
+            removable.append(job_id)
+    if len(store)-len(removable)>config.MAX_IN_MEMORY_JOBS:
+        remaining=[jid for jid in store if jid not in removable and store[jid].get('status') not in ('running','queued')]
+        remaining.sort(key=lambda jid:_ephemeral_created.get(jid,0))
+        removable.extend(remaining[:len(store)-len(removable)-config.MAX_IN_MEMORY_JOBS])
+    for job_id in set(removable):
+        store.pop(job_id,None); _ephemeral_created.pop(job_id,None)
+
+def _prune_staged_sessions():
+    now=time.monotonic()
+    expired=[sid for sid,item in staged_sessions.items() if now-float(item.get('_created_monotonic',now))>config.STAGED_SESSION_TTL_SECONDS]
+    for sid in expired:
+        staged_sessions.pop(sid,None)
 
 def _job_owned(store: dict, job_id: str, user: dict):
     """Never reveal another account's job by guessing UUID/path."""
@@ -196,6 +237,46 @@ def records_df(user_id=None):
     rows=load_canonical_customers(limit=100000, user_id=user_id)
     return pd.DataFrame(rows)
 
+def _restore_employee_state(account: dict) -> dict | None:
+    """Rebuild the latest confirmed workspace from SQLite after a restart."""
+    cached=latest_state.get(account['id'])
+    if cached:
+        return cached
+    history=[x for x in get_user_dataset_history(account['id'],50) if x.get('learning_confirmed')]
+    upload_id=history[0]['id'] if history else None
+    if not upload_id:
+        return None
+    rows=load_canonical_customers(
+        upload_id=upload_id,limit=100000,user_id=account['id'],confirmed_only=True,
+    )
+    if not rows:
+        return None
+    df=build_customer_intelligence(rows)
+    segment_rows=get_customer_segments(upload_id=upload_id,limit=100000,user_id=account['id'])
+    profiles={}
+    segment_by_customer={}
+    for row in segment_rows:
+        segment_by_customer[str(row.get('customer_id'))]=row.get('segment_id')
+        sid=int(row.get('segment_id') or 0)
+        if sid not in profiles:
+            try:profiles[sid]=json.loads(row.get('profile_json') or '{}')
+            except Exception:profiles[sid]={}
+    if not df.empty and 'customer_id' in df.columns and segment_by_customer:
+        df['segment_id']=df['customer_id'].astype(str).map(segment_by_customer)
+    persisted_twins=get_synthetic_customer_twins(
+        upload_id=upload_id,limit=5000,user_id=account['id'],
+    )
+    twins=[r.get('twin') or r for r in persisted_twins]
+    audit=get_learning_audit_by_upload(upload_id,user_id=account['id']) or {}
+    run=get_segmentation_run(upload_id,user_id=account['id']) or {}
+    state={
+        'upload_id':upload_id,'df':df,'personas':[],'profiles':profiles,
+        'segmentation_quality':run.get('metrics') or {},'twins':twins,
+        'audit':audit,'audit_id':audit.get('id'),'learning_confirmed':bool(audit.get('confirmed')),
+    }
+    latest_state[account['id']]=state
+    return state
+
 async def map_columns_two_layer(columns, raw_records, provider, company_id=None):
     result=[]; used=set()
     unresolved=[]
@@ -232,11 +313,33 @@ async def map_columns_two_layer(columns, raw_records, provider, company_id=None)
     return result
 
 @app.get('/')
-def root():return FileResponse(FRONTEND/'pages/login.html')
+def root(req:Request):
+    try:
+        account=current_account(req)
+        if account.get('role')=='admin':
+            current_admin(req); return RedirectResponse('/admin',status_code=303)
+        current_user(req); return RedirectResponse('/app',status_code=303)
+    except HTTPException:
+        return FileResponse(FRONTEND/'pages/login.html')
 @app.get('/app')
-def app_page():return FileResponse(FRONTEND/'index.html')
+def app_page(req:Request):
+    try:
+        account=current_account(req)
+        if account.get('role')=='admin':return RedirectResponse('/admin',status_code=303)
+        current_user(req)
+    except HTTPException:
+        return RedirectResponse('/',status_code=303)
+    return FileResponse(FRONTEND/'index.html')
 @app.get('/admin')
-def admin_page():return FileResponse(FRONTEND/'admin.html')
+def admin_page(req:Request):
+    try:
+        current_admin(req)
+    except HTTPException:
+        try:
+            current_user(req); return RedirectResponse('/app',status_code=303)
+        except HTTPException:
+            return RedirectResponse('/',status_code=303)
+    return FileResponse(FRONTEND/'admin.html')
 
 @app.get('/api/auth/admin-status')
 def auth_admin_status():
@@ -244,12 +347,13 @@ def auth_admin_status():
         'admin_exists': admin_count() > 0,
         'admin_count': admin_count(),
         'company_count': company_count(),
-        'admin_registration_open': True,
-        'bootstrap_protected': bool(__import__('os').getenv('ADMIN_BOOTSTRAP_CODE','').strip()),
+        'admin_registration_open': len(config.ADMIN_BOOTSTRAP_CODE)>=16,
+        'bootstrap_protected': len(config.ADMIN_BOOTSTRAP_CODE)>=16,
     }
 
 @app.post('/api/auth/validate-company-code')
-def validate_company_code(b:CompanyCodeBody):
+def validate_company_code(req:Request,b:CompanyCodeBody):
+    enforce_rate_limit(req,'company-code',30,300)
     code=normalize_join_code(b.code)
     admin=find_admin_by_join_code(code)
     if not admin:
@@ -263,7 +367,8 @@ def validate_company_code(b:CompanyCodeBody):
     }
 
 @app.post('/api/auth/register')
-def register(b:EmployeeRegister):
+def register(req:Request,b:EmployeeRegister):
+    enforce_rate_limit(req,'employee-register',8,3600)
     code=normalize_join_code(b.leader_code)
     admin=find_admin_by_join_code(code)
     if not admin:
@@ -308,12 +413,15 @@ def register(b:EmployeeRegister):
     }
 
 @app.post('/api/auth/register-admin')
-def register_admin(b:AdminRegister):
+def register_admin(req:Request,b:AdminRegister):
+    enforce_rate_limit(req,'admin-register',5,3600)
+    if len(config.ADMIN_BOOTSTRAP_CODE)<16:
+        raise HTTPException(503,'Chức năng tạo ADMIN đang bị khóa. Hãy cấu hình ADMIN_BOOTSTRAP_CODE dài tối thiểu 16 ký tự trên máy chủ.')
     # Multi-company: every business may create its own independent ADMIN account.
     if not bootstrap_code_valid(b.bootstrap_code):
         raise HTTPException(403,'Mã khởi tạo ADMIN không đúng.')
-    if len(b.password)<6:
-        raise HTTPException(400,'Mật khẩu phải có ít nhất 6 ký tự.')
+    if len(b.password)<config.PASSWORD_MIN_LENGTH:
+        raise HTTPException(400,f'Mật khẩu phải có ít nhất {config.PASSWORD_MIN_LENGTH} ký tự.')
     if not (b.organization_name or '').strip():
         raise HTTPException(400,'Vui lòng nhập tên doanh nghiệp.')
     uid=None
@@ -335,23 +443,34 @@ def register_admin(b:AdminRegister):
     return {'ok':True,'user_id':uid,**company}
 
 @app.post('/api/auth/login')
-def login(b:Auth,res:Response):
+def login(req:Request,b:Auth,res:Response):
+    enforce_rate_limit(req,'login',10,300)
     if not verify_user(b.email,b.password): raise HTTPException(401,'Email hoặc mật khẩu không đúng.')
     import sqlite3
     with sqlite3.connect(config.DB_PATH) as c: uid=c.execute('SELECT id FROM users WHERE email=?',(b.email.lower().strip(),)).fetchone()[0]
     account=get_account(uid)
     if not account or not int(account.get('is_active') or 0):
         raise HTTPException(403,'Tài khoản đã bị vô hiệu hóa. Hãy liên hệ ADMIN.')
-    res.set_cookie(config.SESSION_COOKIE,create_session(uid),httponly=True,samesite='lax',max_age=604800)
+    res.set_cookie(
+        config.SESSION_COOKIE,
+        create_session(uid),
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite='lax',
+        max_age=config.SESSION_MAX_AGE_SECONDS,
+        path='/',
+    )
     record_activity(uid,'Đăng nhập hệ thống','/api/auth/login','POST',200,'')
     return {'ok':True,'user':account,'redirect':'/admin' if account.get('role')=='admin' else '/app'}
 @app.post('/api/auth/logout')
 def logout(req:Request,res:Response):
     u=get_user(req.cookies.get(config.SESSION_COOKIE))
     if u: record_activity(u['id'],'Đăng xuất hệ thống','/api/auth/logout','POST',200,'')
-    delete_session(req.cookies.get(config.SESSION_COOKIE));res.delete_cookie(config.SESSION_COOKIE);return {'ok':True}
+    delete_session(req.cookies.get(config.SESSION_COOKIE))
+    res.delete_cookie(config.SESSION_COOKIE,path='/',secure=config.SESSION_COOKIE_SECURE,samesite='lax')
+    return {'ok':True}
 @app.get('/api/auth/me')
-def me(req:Request):return current_user(req)
+def me(req:Request):return current_account(req)
 
 @app.get('/api/admin/profile')
 def admin_profile(req:Request):
@@ -399,20 +518,23 @@ def admin_activity_api(req:Request,limit:int=200):
 
 @app.get('/api/system/health')
 async def health(req:Request):
-    current_user(req)
+    u=current_user(req); _user_rate_limit(u,'system-health',30,60)
     data=await check_all()
     try: data['storage']=database_runtime_info()
     except Exception as e: data['storage']={'engine':'sqlite','error':str(e)}
     return data
 @app.post('/api/system/test/groq')
-async def tg(req:Request):current_user(req);return await check_groq()
+async def tg(req:Request):
+    u=current_user(req); _user_rate_limit(u,'provider-test',10,300); return await check_groq()
 @app.post('/api/system/test/ollama')
-async def to(req:Request):current_user(req);return await check_ollama()
+async def to(req:Request):
+    u=current_user(req); _user_rate_limit(u,'provider-test',10,300); return await check_ollama()
 @app.post('/api/system/provider')
 def set_provider(req:Request,b:Provider):
-    current_user(req); p=b.provider.lower()
-    if p not in ('groq','ollama'):raise HTTPException(400,'Provider phải là groq hoặc ollama.')
-    config.AI_PROVIDER=p;return {'ok':True,'provider':p}
+    u=current_user(req)
+    try:p=set_user_ai_provider(u['id'],b.provider)
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True,'provider':p}
 
 
 @app.post('/api/customers/upload')
@@ -420,12 +542,8 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
     """Luồng upload cũ được giữ nguyên để tương thích. Luồng mới dùng /inspect.
     Endpoint này đọc file -> mapping -> ETL -> lưu DB -> phân tích/phân nhóm.
     """
-    u=current_user(req)
-    raw=await file.read()
-    if not raw:
-        raise HTTPException(400, 'File rỗng hoặc không đọc được.')
-    if len(raw)>config.MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f'File vượt quá giới hạn {config.MAX_UPLOAD_BYTES//1024//1024} MB.')
+    u=current_user(req); _user_rate_limit(u,'data-upload',10,3600)
+    raw=await read_upload_limited(file,config.MAX_UPLOAD_BYTES)
     filename=file.filename or 'dataset'
     try:
         from .data_pipeline_compat import read_dataframe
@@ -437,7 +555,7 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
         df=df.loc[:, ~df.columns.duplicated()].copy()
         raw_records=df.to_dict('records')
         # Mapping hai lớp: rule trước, Groq chỉ xử lý cột chưa nhận diện.
-        mapping=await map_columns_two_layer(list(df.columns), raw_records, config.AI_PROVIDER, u.get('company_id'))
+        mapping=await map_columns_two_layer(list(df.columns),raw_records,_provider_for(u),u.get('company_id'))
         mapping_config=[]
         for m in mapping:
             mapping_config.append({'Tên cột gốc':m['source_column'],'AI hiểu là':m['canonical_field'] if m.get('canonical_field') not in ('unmapped','unknown_column') else 'unmapped'})
@@ -447,7 +565,8 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
             raise ValueError('Không tạo được dữ liệu chuẩn hóa từ file.')
         upload_id=save_uploaded_dataset(filename,safe_records,list(safe_records[0].keys()),'legacy_web_upload',user_id=u['id'])
         save_canonical_customers(upload_id,safe_records)
-        save_learning_audit(upload_id,filename,audit,mapping,audit.get('missing_required_fields',[]),user_id=u['id'])
+        audit_id=save_learning_audit(upload_id,filename,audit,mapping,audit.get('missing_required_fields',[]),user_id=u['id'])
+        confirm_learning_audit(audit_id,user_id=u['id'])
         intelligence=build_customer_intelligence(safe_records); save_customer_intelligence_features(intelligence,upload_id)
         seg=hybrid_segment_customers(intelligence,n_clusters=None,random_state=config.RANDOM_STATE) if len(intelligence)>=2 else {'labeled_df':intelligence,'data':intelligence,'profiles':{},'n_clusters':0,'silhouette':None,'quality':{'score':0,'status':'LOW'}}
         labeled=seg.get('labeled_df',seg.get('data',intelligence)); profiles=seg.get('profiles',{})
@@ -456,7 +575,7 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
             save_segmentation_run(upload_id,seg)
         personas=[]
         if personas: save_customer_personas(personas,upload_id)
-        latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[],'mapping':mapping,'audit':audit,'audit_id':get_learning_audit_by_upload(upload_id).get('id') if get_learning_audit_by_upload(upload_id) else None,'learning_confirmed':True}
+        latest_state[u['id']]={'upload_id':upload_id,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[],'mapping':mapping,'audit':audit,'audit_id':audit_id,'learning_confirmed':True}
         return json_safe({'ok':True,'summary':{'rows':len(safe_records),'columns':list(df.columns),'audit':audit,'mapping':mapping,'segmentation':{'n_clusters':seg.get('n_clusters',0),'silhouette':seg.get('silhouette')},'upload_id':upload_id}})
     except HTTPException:
         raise
@@ -466,15 +585,15 @@ async def legacy_customer_upload(req: Request, file: UploadFile = File(...)):
 @app.post('/api/customers/inspect')
 async def staged_inspect(req:Request,file:UploadFile=File(...)):
     """Bước 1: chỉ đọc/kiểm tra file. Không gọi AI và không lưu vào dữ liệu mô phỏng."""
-    u=current_user(req); raw=await file.read()
-    if len(raw)>config.MAX_UPLOAD_BYTES: raise HTTPException(413,'File vượt quá giới hạn.')
+    u=current_user(req); _user_rate_limit(u,'data-upload',10,3600)
+    raw=await read_upload_limited(file,config.MAX_UPLOAD_BYTES)
     from .data_pipeline_compat import read_dataframe
     try:
         df=read_dataframe(raw,file.filename or '')
         if df.empty: raise ValueError('File không có dữ liệu.')
-        sid=str(uuid.uuid4())
+        _prune_staged_sessions(); sid=str(uuid.uuid4())
         inspection=inspect_dataframe(df,file.filename or 'dataset',_rule_based_match)
-        staged_sessions[sid]={'user_id':u['id'],'filename':file.filename or 'dataset','df':df,'inspection':inspection,'mapping':None,'inspection_confirmed':False,'learning_confirmed':False,'upload_id':None,'audit_id':None,'learned_records':None,'audit':None}
+        staged_sessions[sid]={'user_id':u['id'],'filename':file.filename or 'dataset','df':df,'inspection':inspection,'mapping':None,'inspection_confirmed':False,'learning_confirmed':False,'upload_id':None,'audit_id':None,'learned_records':None,'audit':None,'_created_monotonic':time.monotonic()}
         return json_safe({'ok':True,'session_id':sid,'inspection':inspection,'message':'Đã đọc dữ liệu. Chưa gọi AI và chưa đưa dữ liệu vào pipeline mô phỏng.'})
     except Exception as e:
         raise HTTPException(400,'Không thể đọc dữ liệu: '+str(e))
@@ -482,13 +601,13 @@ async def staged_inspect(req:Request,file:UploadFile=File(...)):
 @app.post('/api/customers/inspect/{session_id}/confirm')
 async def staged_confirm_inspection(req:Request,session_id:str):
     """Bước 2: người dùng xác nhận preview, sau đó mới cho phép AI mapping."""
-    u=current_user(req); st=staged_sessions.get(session_id)
+    u=current_user(req); _prune_staged_sessions(); st=staged_sessions.get(session_id)
     if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
     if st.get('inspection_confirmed'):
         return json_safe({'ok':True,'session_id':session_id,'mapping':st.get('mapping') or [],'already_confirmed':True})
     df=st['df']; records=df.head(100).where(pd.notna(df.head(100)),None).to_dict('records')
     try:
-        mapping=await map_columns_two_layer(list(df.columns),records,config.AI_PROVIDER,u.get('company_id'))
+        mapping=await map_columns_two_layer(list(df.columns),records,_provider_for(u),u.get('company_id'))
         missing=missing_required_fields(mapping)
         duplicates=detect_possible_duplicates(df,mapping)
         current_rows=apply_mapping(df.where(pd.notna(df),None).to_dict('records'),mapping)
@@ -502,7 +621,7 @@ async def staged_confirm_inspection(req:Request,session_id:str):
 
 @app.get('/api/customers/inspect/{session_id}')
 def staged_inspection_status(req:Request,session_id:str):
-    u=current_user(req); st=staged_sessions.get(session_id)
+    u=current_user(req); _prune_staged_sessions(); st=staged_sessions.get(session_id)
     if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
     return json_safe({'session_id':session_id,'inspection':st['inspection'],'mapping':st.get('mapping'),'inspection_confirmed':st.get('inspection_confirmed',False),'learning_confirmed':st.get('learning_confirmed',False),'audit':st.get('audit'),'dataset_id':st.get('upload_id'),'audit_id':st.get('audit_id')})
 
@@ -510,7 +629,7 @@ def staged_inspection_status(req:Request,session_id:str):
 @app.put('/api/customers/inspect/{session_id}/mapping')
 def staged_update_mapping(req:Request,session_id:str,body:MappingBody):
     # Human correction layer for schema mapping. Does not call AI.
-    u=current_user(req); st=staged_sessions.get(session_id)
+    u=current_user(req); _prune_staged_sessions(); st=staged_sessions.get(session_id)
     if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
     if not st.get('inspection_confirmed'): raise HTTPException(400,'Hãy xác nhận dữ liệu trước.')
     allowed=set(CANONICAL_SCHEMA.keys())|{'unmapped'}; used=set(); cleaned=[]
@@ -539,10 +658,12 @@ def staged_update_mapping(req:Request,session_id:str,body:MappingBody):
 @app.post('/api/customers/learning/start/{session_id}')
 async def staged_learning_start(req:Request,session_id:str):
     """Bước 3: AI học từ dữ liệu real sau khi preview đã được xác nhận."""
-    u=current_user(req); st=staged_sessions.get(session_id)
+    u=current_user(req); _prune_staged_sessions(); st=staged_sessions.get(session_id)
     if not st or st.get('user_id')!=u['id']: raise HTTPException(404,'Không tìm thấy phiên dữ liệu.')
     if not st.get('inspection_confirmed') or not st.get('mapping'):
         raise HTTPException(400,'Hãy xác nhận bước đọc dữ liệu trước khi AI học.')
+    _user_rate_limit(u,'ai-learning',10,3600)
+    provider=_provider_for(u)
     jid=str(uuid.uuid4())
     _job_register(staged_learning_jobs,jid,u,'ai_learning',{'status':'running','progress':0,'step':'Chuẩn bị dữ liệu','session_id':session_id,'error':None,'audit':None},{'session_id':session_id})
     async def worker():
@@ -575,7 +696,7 @@ async def staged_learning_start(req:Request,session_id:str):
                 staged_learning_jobs[jid].update(progress=10+int((idx/max(1,len(REQUIRED_FIELDS)))*55),step=f'AI đang học trường: {field}')
                 try:
                     from staged_data_workflow import _learn_field
-                    learning[field]=await _learn_field(field,learning_source_df,config.AI_PROVIDER)
+                    learning[field]=await _learn_field(field,learning_source_df,provider)
                 except Exception as e:
                     learning[field]={'field':field,'learned':False,'confidence':0,'strategy':'not_enough_evidence','evidence':f'AI không thể học trường này: {e}','candidate_values':[],'notes':''}
             staged_learning_jobs[jid].update(progress=70,step='Bổ sung các trường còn thiếu')
@@ -587,7 +708,7 @@ async def staged_learning_start(req:Request,session_id:str):
             audit['data_quality']=st.get('inspection',{}).get('quality',{})
             audit['duplicates']=st.get('duplicates',{})
             audit['data_drift']=st.get('drift',{})
-            audit['learning_provider']=config.AI_PROVIDER
+            audit['learning_provider']=provider
             audit['learned_summary']=[x for x in audit.get('learned_fields',[]) if x.get('learned')]
             staged_learning_jobs[jid].update(progress=80,step='Lưu audit dữ liệu')
             safe_records=json_safe(learned_df.where(pd.notna(learned_df),None).to_dict('records'))
@@ -613,7 +734,6 @@ async def staged_learning_start(req:Request,session_id:str):
             update_background_job(jid,u['id'],status='completed',progress=100,result={'audit_id':audit_id,'dataset_id':upload_id,'session_id':session_id})
         except Exception as e:
             staged_learning_jobs[jid].update(status='failed',error=str(e))
-            update_background_job(jid,u['id'],status='failed',progress=jobs[jid].get('progress',0),error=str(e))
             update_background_job(jid,u['id'],status='failed',progress=staged_learning_jobs[jid].get('progress',0),error=str(e))
     asyncio.create_task(worker())
     return {'ok':True,'job_id':jid}
@@ -626,7 +746,7 @@ def staged_learning_status(req:Request,job_id:str):
 @app.post('/api/customers/learning/confirm/{session_id}')
 def staged_learning_confirm(req:Request,session_id:str):
     u=current_user(req)
-    st=staged_sessions.get(session_id)
+    _prune_staged_sessions(); st=staged_sessions.get(session_id)
     state=latest_state.get(u['id'],{})
     if not st or st.get('user_id')!=u['id']:
         if state.get('staged_session_id')==session_id and state.get('audit_id'):
@@ -685,7 +805,7 @@ def customer_dataset_history(req:Request):
 
 @app.post('/api/trends/collect')
 async def collect_trends(req:Request):
-    current_user(req)
+    u=current_user(req); _user_rate_limit(u,'trend-collection',10,600)
     try:
         from data_collector import fetch_pytrends
         trends=fetch_pytrends()
@@ -768,7 +888,7 @@ def ai_learning_history_delete(req:Request,upload_id:int):
 
 @app.post('/api/personas/generate/start')
 async def generate_personas_start(req:Request,b:TwinBody):
-    u=current_user(req); st=latest_state.get(u['id'])
+    u=current_user(req); _user_rate_limit(u,'digital-twin',20,3600); st=_restore_employee_state(u)
     if not st: raise HTTPException(400,'Hãy tải dữ liệu khách hàng trước.')
     if st.get('audit_id') and not st.get('learning_confirmed'):
         raise HTTPException(400,'Bạn cần xem và xác nhận báo cáo AI Learning trước khi tạo khách hàng ảo.')
@@ -800,7 +920,7 @@ def generate_personas_status(req:Request,job_id:str):
 @app.post('/api/personas/generate')
 def generate_personas(req:Request,b:TwinBody):
     # Backward-compatible synchronous endpoint.
-    u=current_user(req); st=latest_state.get(u['id'])
+    u=current_user(req); _user_rate_limit(u,'digital-twin',20,3600); st=_restore_employee_state(u)
     if not st: raise HTTPException(400,'Hãy tải dữ liệu khách hàng trước.')
     if st.get('audit_id') and not st.get('learning_confirmed'):
         raise HTTPException(400,'Bạn cần xác nhận báo cáo AI Learning trước khi tạo khách hàng ảo.')
@@ -808,7 +928,7 @@ def generate_personas(req:Request,b:TwinBody):
     return json_safe({'ok':True,'count':len(twins),'twins':twins,'note':result.get('note')})
 @app.get('/api/personas')
 def personas(req:Request,limit:int=5000):
-    u=current_user(req); st=latest_state.get(u['id'])
+    u=current_user(req); st=_restore_employee_state(u)
     if st and st.get('twins'): return json_safe({'items':st['twins'][:max(1,min(limit,5000))]})
     # Never fall back to a global twins query: resolve only this account's latest confirmed upload.
     history=[x for x in get_user_dataset_history(u['id'],50) if x.get('learning_confirmed')]
@@ -819,13 +939,16 @@ def personas(req:Request,limit:int=5000):
 
 @app.post('/api/simulations/start')
 async def start(req:Request,b:Sim):
-    u=current_user(req); st=latest_state.get(u['id'])
+    u=current_user(req); _user_rate_limit(u,'simulation',20,3600); st=_restore_employee_state(u)
     if not st: raise HTTPException(400,'Hãy tải dữ liệu và tạo khách hàng ảo trước.')
     if st.get('audit_id') and not st.get('learning_confirmed'):
         raise HTTPException(400,'Bạn cần xác nhận báo cáo AI Learning trước khi mô phỏng.')
     twins=st.get('twins') or generate_synthetic_twins(st['df'],twins_per_segment=max(1,b.count//max(1,st.get('seg_count',1) or 1))).get('twins',[])
     if not twins: raise HTTPException(400,'Không có khách hàng ảo để mô phỏng.')
-    twins=twins[:b.count]; provider=(b.provider or config.AI_PROVIDER).lower(); jid=str(uuid.uuid4())
+    twins=twins[:b.count]; provider=str(b.provider or _provider_for(u)).lower().strip()
+    if provider not in ('groq','ollama'):
+        raise HTTPException(400,'Provider phải là groq hoặc ollama.')
+    jid=str(uuid.uuid4())
     _job_register(jobs,jid,u,'simulation',{
         'status':'running',
         'progress':0,
@@ -842,12 +965,15 @@ async def start(req:Request,b:Sim):
     async def worker():
         try:
             # quantitative twin model first
-            tdf=twins_to_dataframe(twins); model=simulate_twins(tdf,b.campaign)
+            from marketing_learning import latest_calibration
+            calibration=latest_calibration(config.DB_PATH,user_id=u['id'])
+            tdf=twins_to_dataframe(twins); model=simulate_twins(tdf,b.campaign,calibration=calibration)
             # LLM comments run concurrently with semaphore; use provider after real data is transformed to twins
             sem=asyncio.Semaphore(config.MAX_CONCURRENT_AI); done=0; lock=asyncio.Lock(); results=[None]*len(twins)
             async def one(i,t):
                 nonlocal done
                 async with sem:
+                    base=model['results'].iloc[i] if i < len(model.get('results',[])) else {}
                     ai_twin=_compact_twin_for_ai(t)
                     # Same evaluation task as before, but internal generation/provenance metadata is omitted
                     # to reduce tokens. The campaign text and simulation-relevant twin evidence are preserved.
@@ -858,14 +984,24 @@ async def start(req:Request,b:Sim):
                         'chép lại hướng dẫn, tên trường JSON, hoặc các cụm như "tiếng Việt tự nhiên, ngắn gọn". '
                         'REASON phải nêu 1-2 yếu tố cụ thể từ hồ sơ (ví dụ sở thích, pain point, độ nhạy giá, RFM/proxy) giải thích điểm số. '
                         'Nếu hồ sơ thiếu một thuộc tính thì không được bịa thuộc tính đó; hãy đánh giá bằng các bằng chứng còn lại. '
+                        'Mô hình định lượng đã tính điểm; bạn chỉ giải thích, không tự chấm lại điểm. '
                         'Trả đúng MỘT JSON, không markdown, schema: '
-                        '{"score":1,"sentiment":"positive|neutral|negative","comment":"phản ứng của khách hàng","reason":"lý do dựa trên hồ sơ"}.\n'
+                        '{"comment":"phản ứng của khách hàng","reason":"lý do dựa trên hồ sơ"}.\n'
                         'Chiến dịch: '+str(b.campaign)+'\n'
                         'Hồ sơ khách hàng tổng hợp: '+json.dumps(ai_twin,ensure_ascii=False,separators=(',',':'))
                     )
                     try:
                         raw=await _simulation_ai_call(prompt,provider); a,c=raw.find('{'),raw.rfind('}'); rr=json.loads(raw[a:c+1])
-                        reaction={'score':max(1,min(10,int(rr.get('score',5)))),'sentiment':str(rr.get('sentiment','neutral')),'comment':str(rr.get('comment','')),'reason':str(rr.get('reason','')),'source':'ai'}
+                        reaction={
+                            'score':int(base.get('score',5)),
+                            'sentiment':str(base.get('sentiment','neutral')),
+                            'comment':str(rr.get('comment','')),
+                            'reason':str(rr.get('reason','')),
+                            'source':'quantitative_with_ai_explanation',
+                            'conversion_probability':base.get('conversion_probability'),
+                            'raw_conversion_probability':base.get('raw_conversion_probability'),
+                            'calibration':calibration,
+                        }
                         ai_ok=True
                         ai_error=None
                     except Exception as e:
@@ -875,8 +1011,7 @@ async def start(req:Request,b:Sim):
                         ai_error=f'{type(e).__name__}: {e}'
                         twin_id=t.get('twin_id') or t.get('id') or f'index-{i}'
                         print(f'[SIMULATION AI ERROR] job={jid} provider={provider} twin={twin_id} error={ai_error}', flush=True)
-                        base=model['results'].iloc[i] if i < len(model.get('results',[])) else {}
-                        reaction={'score':int(base.get('score',5)),'sentiment':base.get('sentiment','neutral'),'comment':'Phản ứng được ước lượng từ mô hình định lượng của digital twin.','reason':'Fallback khi AI không phản hồi.','source':'quantitative_fallback'}
+                        reaction={'score':int(base.get('score',5)),'sentiment':base.get('sentiment','neutral'),'comment':'Phản ứng được ước lượng từ mô hình định lượng của digital twin.','reason':'AI giải thích không khả dụng; điểm số vẫn do mô hình định lượng tạo.','source':'quantitative_fallback','conversion_probability':base.get('conversion_probability'),'raw_conversion_probability':base.get('raw_conversion_probability'),'calibration':calibration}
                     async with lock:
                         if ai_ok:
                             jobs[jid]['ai_success']+=1
@@ -893,7 +1028,7 @@ async def start(req:Request,b:Sim):
                         done+=1; jobs[jid]['progress']=round(done/len(twins)*100,1)
                     results[i]={'persona':t,'reaction':reaction}
             await asyncio.gather(*(one(i,t) for i,t in enumerate(twins)))
-            analysis={'summary':f'Mô phỏng {len(results)} khách hàng ảo bằng mô hình digital twin và phản hồi AI.','strengths':[],'weaknesses':[],'star_rating':3}
+            analysis={'summary':f'Mô phỏng {len(results)} khách hàng ảo bằng mô hình định lượng digital twin; AI chỉ diễn giải phản ứng.','strengths':[],'weaknesses':[],'star_rating':3}
             # Persist both the flat legacy fields and the full Digital Twin + reaction
             # payload. The flat columns keep old reports compatible; details preserves
             # the complete customer feed after refresh/reopen.
@@ -981,15 +1116,42 @@ def overview(req:Request):
 
 @app.post('/api/advanced/ab')
 def advanced_ab(req:Request,b:ABBody):
-    u=current_user(req); st=latest_state.get(u['id']); twins=st.get('twins') if st else []
+    u=current_user(req); st=_restore_employee_state(u); twins=st.get('twins') if st else []
     if not twins:raise HTTPException(400,'Hãy tạo digital twin trước.')
-    r=paired_compare(twins_to_dataframe(twins),b.campaigns); table=r.get('table',pd.DataFrame()); rows=table.to_dict('records') if not table.empty else []
-    return json_safe({'status':r['status'],'results':rows})
+    campaigns=[str(x or '').strip() for x in b.campaigns if str(x or '').strip()]
+    if len(campaigns)<2 or len(campaigns)>10:
+        raise HTTPException(400,'A/B test cần từ 2 đến 10 phương án hợp lệ.')
+    from marketing_learning import latest_calibration
+    calibration=latest_calibration(config.DB_PATH,user_id=u['id'])
+    r=paired_compare(twins_to_dataframe(twins),campaigns,calibration=calibration)
+    table=r.get('table',pd.DataFrame()); rows=table.to_dict('records') if not table.empty else []
+    experiment_ids=[]
+    for campaign,run in (r.get('runs') or {}).items():
+        result_df=run.get('results',pd.DataFrame())
+        experiment_ids.append(save_advanced_experiment(
+            'ab',campaign,run.get('summary') or {},
+            result_df.to_dict('records') if isinstance(result_df,pd.DataFrame) else [],
+            model_version='heuristic_v1_calibrated',user_id=u['id'],company_id=u.get('company_id'),
+        ))
+    return json_safe({'status':r['status'],'results':rows,'experiment_ids':experiment_ids,'calibration':calibration})
 @app.post('/api/advanced/optimize')
 def advanced_opt(req:Request,b:OptBody):
-    u=current_user(req); st=latest_state.get(u['id']); twins=st.get('twins') if st else []
+    u=current_user(req); st=_restore_employee_state(u); twins=st.get('twins') if st else []
     if not twins:raise HTTPException(400,'Hãy tạo digital twin trước.')
-    r=optimize_marketing(twins_to_dataframe(twins),b.budget,b.discount_options,b.channel_options); rows=r.get('candidates',pd.DataFrame()); return json_safe({'status':r['status'],'best':r.get('best'),'candidates':rows.head(100).to_dict('records') if not rows.empty else []})
+    if len(b.discount_options or [])>20 or len(b.channel_options or [])>20:
+        raise HTTPException(400,'Mỗi danh sách tùy chọn chỉ được tối đa 20 giá trị.')
+    from marketing_learning import latest_calibration
+    calibration=latest_calibration(config.DB_PATH,user_id=u['id'])
+    r=optimize_marketing(twins_to_dataframe(twins),b.budget,b.discount_options,b.channel_options,calibration=calibration)
+    candidates=r.get('candidates',pd.DataFrame()); candidate_rows=candidates.head(100).to_dict('records') if not candidates.empty else []
+    experiment_id=None
+    if r.get('status')=='ok' and r.get('best'):
+        best=dict(r['best']); best['population']=len(twins); best['calibration']=calibration
+        experiment_id=save_advanced_experiment(
+            'optimization',str(best.get('campaign') or 'Tối ưu chiến dịch'),best,candidate_rows,
+            budget=b.budget,model_version='heuristic_v1_calibrated',user_id=u['id'],company_id=u.get('company_id'),
+        )
+    return json_safe({'status':r['status'],'best':r.get('best'),'candidates':candidate_rows,'experiment_id':experiment_id,'calibration':calibration})
 @app.get('/api/advanced/experiments')
 def advanced_experiments(req:Request):
     u=current_user(req); return json_safe({'items':get_advanced_experiments(100,user_id=u['id'])})
@@ -1000,7 +1162,10 @@ def feedback(req:Request,b:FeedbackBody):
     if int(b.experiment_id or 0)>0 and not user_owns_experiment(u['id'],b.experiment_id):
         raise HTTPException(404,'Không tìm thấy thử nghiệm thuộc tài khoản này.')
     from marketing_learning import record_outcome
-    metrics,cal=record_outcome(config.DB_PATH,b.experiment_id,b.predicted_conversion,b.actual_conversion,b.predicted_revenue,b.actual_revenue,b.notes,user_id=u['id'],company_id=u.get('company_id'))
+    try:
+        metrics,cal=record_outcome(config.DB_PATH,b.experiment_id,b.predicted_conversion,b.actual_conversion,b.predicted_revenue,b.actual_revenue,b.notes,user_id=u['id'],company_id=u.get('company_id'))
+    except ValueError as e:
+        raise HTTPException(400,str(e))
     return {'ok':True,'metrics':metrics,'calibration':cal}
 @app.get('/api/feedback')
 def feedback_list(req:Request):
@@ -1219,8 +1384,10 @@ def assistant_clear_history(req:Request):
 
 @app.post('/api/chat')
 async def assistant(req:Request,b:Chat):
-    u=current_user(req)
-    provider=b.provider or config.AI_PROVIDER
+    u=current_user(req); _user_rate_limit(u,'chat-ai',30,60)
+    provider=str(b.provider or _provider_for(u)).lower().strip()
+    if provider not in ('groq','ollama'):
+        raise HTTPException(400,'Provider phải là groq hoặc ollama.')
     message=str(b.message or '').strip()
     if not message:
         raise HTTPException(400,'Tin nhắn không được để trống.')

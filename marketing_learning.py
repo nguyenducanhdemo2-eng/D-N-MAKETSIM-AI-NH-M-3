@@ -14,14 +14,36 @@ def record_outcome(db_path, experiment_id, predicted_conversion, actual_conversi
                    predicted_revenue=None, actual_revenue=None, notes="",
                    user_id=None, company_id=None):
     pred=[float(predicted_conversion)]; act=[float(actual_conversion)]
-    metrics=evaluate_predictions(pred,act); cal=fit_scalar_calibration(pred,act)
+    if not (0<=pred[0]<=1 and 0<=act[0]<=1):
+        raise ValueError('Tỷ lệ dự đoán và thực tế phải nằm trong khoảng 0 đến 1.')
+    metrics=evaluate_predictions(pred,act)
     con=sqlite3.connect(db_path)
-    con.execute("""INSERT INTO campaign_feedback
+    cur=con.execute("""INSERT INTO campaign_feedback
         (experiment_id,predicted_conversion,actual_conversion,predicted_revenue,actual_revenue,
          mae,bias,calibration_factor,calibration_offset,notes,user_id,company_id)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (experiment_id,*pred,*act,predicted_revenue,actual_revenue,metrics["mae"],metrics["bias"],
-         cal.get("factor",1),cal.get("offset",0),notes,user_id,company_id))
+         1.0,0.0,notes,user_id,company_id))
+    feedback_id=int(cur.lastrowid)
+
+    # Learn from the complete tenant/account history. Fitting on the single new
+    # row always returned "insufficient" and could never affect later runs.
+    sql='SELECT predicted_conversion,actual_conversion FROM campaign_feedback'
+    params=[]; where=[]
+    if user_id is not None:
+        where.append('user_id=?'); params.append(int(user_id))
+    elif company_id is not None:
+        where.append('company_id=?'); params.append(int(company_id))
+    if where:
+        sql+=' WHERE '+' AND '.join(where)
+    rows=con.execute(sql,tuple(params)).fetchall()
+    all_pred=[float(r[0]) for r in rows]
+    all_actual=[float(r[1]) for r in rows]
+    cal=fit_scalar_calibration(all_pred,all_actual)
+    con.execute(
+        'UPDATE campaign_feedback SET calibration_factor=?,calibration_offset=? WHERE id=?',
+        (float(cal.get('factor',1.0)),float(cal.get('offset',0.0)),feedback_id),
+    )
     con.commit(); con.close(); return metrics,cal
 
 

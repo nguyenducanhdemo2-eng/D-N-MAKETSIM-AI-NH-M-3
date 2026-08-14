@@ -9,9 +9,11 @@ import os
 import json
 import re
 import hashlib
+import hmac
 import secrets
 from collections import Counter
 import pandas as pd
+import config
 from config import DB_PATH
 
 
@@ -685,7 +687,7 @@ def delete_ai_learning_dataset(user_id: int, upload_id: int) -> dict:
     if not row:
         conn.close(); return {'deleted':False,'reason':'not_found'}
     counts={}
-    for table in ['synthetic_customer_twins','customer_personas','customer_segments','customer_intelligence_features','canonical_customers','learning_audit']:
+    for table in ['synthetic_customer_twins','customer_personas','customer_segments','segmentation_runs','customer_intelligence_features','canonical_customers','learning_audit']:
         try:
             counts[table]=cur.execute(f"SELECT COUNT(*) FROM {table} WHERE upload_id=?",(upload_id,)).fetchone()[0]
             cur.execute(f"DELETE FROM {table} WHERE upload_id=?",(upload_id,))
@@ -703,8 +705,28 @@ def reset_db():
     init_db()
 
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+_PASSWORD_SCHEME='pbkdf2_sha256'
+
+
+def _hash_password(password: str, salt: str, iterations: int | None = None) -> str:
+    """Slow password hash encoded with its algorithm and work factor.
+
+    The salt remains in the existing users.salt column so this migration is
+    compatible with every deployed SQLite database and needs no destructive
+    schema rewrite.
+    """
+    rounds=int(iterations or config.PBKDF2_ITERATIONS)
+    digest=hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        bytes.fromhex(salt),
+        rounds,
+    ).hex()
+    return f'{_PASSWORD_SCHEME}${rounds}${digest}'
+
+
+def _legacy_hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256((salt+password).encode('utf-8')).hexdigest()
 
 
 def create_user(email: str, password: str) -> int:
@@ -713,8 +735,8 @@ def create_user(email: str, password: str) -> int:
     password = password or ""
     if not email:
         raise ValueError("Vui lòng nhập email.")
-    if len(password) < 6:
-        raise ValueError("Mật khẩu phải có ít nhất 6 ký tự.")
+    if len(password) < config.PASSWORD_MIN_LENGTH:
+        raise ValueError(f"Mật khẩu phải có ít nhất {config.PASSWORD_MIN_LENGTH} ký tự.")
 
     init_db()
     conn = _connect()
@@ -724,7 +746,7 @@ def create_user(email: str, password: str) -> int:
         conn.close()
         raise ValueError("Email này đã tồn tại.")
 
-    salt = secrets.token_hex(8)
+    salt = secrets.token_hex(16)
     password_hash = _hash_password(password, salt)
     cur.execute(
         "INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
@@ -746,14 +768,38 @@ def verify_user(email: str, password: str) -> bool:
     init_db()
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT password_hash, salt FROM users WHERE email=?", (email,))
+    cur.execute("SELECT id,password_hash,salt FROM users WHERE email=?", (email,))
     row = cur.fetchone()
-    conn.close()
     if not row:
+        conn.close()
         return False
 
-    stored_hash, salt = row
-    return _hash_password(password, salt) == stored_hash
+    user_id,stored_hash,salt=row
+    verified=False
+    needs_upgrade=False
+    try:
+        if str(stored_hash).startswith(_PASSWORD_SCHEME+'$'):
+            _,rounds_text,_=str(stored_hash).split('$',2)
+            rounds=int(rounds_text)
+            verified=hmac.compare_digest(_hash_password(password,salt,rounds),str(stored_hash))
+            needs_upgrade=verified and rounds<config.PBKDF2_ITERATIONS
+        else:
+            # Backward compatibility: verify the old one-round SHA-256 value only
+            # once, then transparently upgrade it after a successful login.
+            verified=hmac.compare_digest(_legacy_hash_password(password,salt),str(stored_hash))
+            needs_upgrade=verified
+    except (TypeError,ValueError):
+        verified=False
+
+    if needs_upgrade:
+        new_salt=secrets.token_hex(16)
+        cur.execute(
+            'UPDATE users SET password_hash=?,salt=? WHERE id=?',
+            (_hash_password(password,new_salt),new_salt,int(user_id)),
+        )
+        conn.commit()
+    conn.close()
+    return verified
 
 
 def save_uploaded_dataset(upload_name: str, records: list, columns: list, upload_source: str = "web_upload", user_id: int | None = None):
