@@ -16,7 +16,7 @@ from hybrid_segmentation import hybrid_segment_customers
 from persona_engine import build_data_driven_personas
 from digital_twin import generate_synthetic_twins, twins_to_dataframe
 from advanced_simulation import simulate_twins, paired_compare, optimize_marketing
-from .auth_db import init_auth, create_session, get_user, delete_session
+from .auth_db import init_auth, create_session, get_user, delete_session, set_session_mode
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
     employee_visible_to_admin, repair_company_memberships,
     create_company_admin, bootstrap_code_valid, require_admin_account, require_employee_account,
@@ -116,6 +116,7 @@ class AdminRegister(BaseModel):
 class CompanyCodeBody(BaseModel): code:str
 class ActiveBody(BaseModel): active:bool
 class Provider(BaseModel): provider:str
+class SessionModeBody(BaseModel): mode:str
 class MappingBody(BaseModel): mappings:list[dict]
 class Sim(BaseModel): campaign:str; count:int=Field(default=100,ge=1,le=1000); provider:str|None=None; name:str='Chiến dịch mô phỏng'
 class Chat(BaseModel): message:str; provider:str|None=None
@@ -128,7 +129,7 @@ class FeedbackBody(BaseModel): experiment_id:int; predicted_conversion:float; ac
 def startup():
     # Two-pass init keeps legacy SQLite migrations safe: admin schema adds users.company_id,
     # then init_db backfills tenant ownership onto business records.
-    init_db(); init_auth(); init_admin_schema(); init_db(); mark_interrupted_background_jobs()
+    init_db(); init_admin_schema(); init_auth(); init_db(); mark_interrupted_background_jobs()
 
 def current_account(req):
     u=get_user(req.cookies.get(config.SESSION_COOKIE))
@@ -136,19 +137,27 @@ def current_account(req):
     account=get_account(u['id'])
     if not account or not int(account.get('is_active') or 0):
         raise HTTPException(403,'Tài khoản đã bị vô hiệu hóa.')
+    account['active_mode']=u.get('active_mode') or ('admin' if account.get('role')=='admin' else 'employee')
     return account
 
 def current_user(req):
-    """Backward-compatible name for the employee-only workspace guard."""
+    """Employee workspace guard, including an ADMIN explicitly in employee mode."""
     account=current_account(req)
-    try:
-        require_employee_account(account['id'])
-    except PermissionError as e:
-        raise HTTPException(403,str(e))
+    if account.get('active_mode')!='employee':
+        raise HTTPException(403,'Hãy chuyển sang chế độ nhân viên để sử dụng khu vực này.')
+    if account.get('role')=='employee':
+        try:
+            require_employee_account(account['id'])
+        except PermissionError as e:
+            raise HTTPException(403,str(e))
+    elif account.get('role')!='admin' or account.get('company_id') is None:
+        raise HTTPException(403,'Tài khoản không có quyền sử dụng khu vực nhân viên.')
     return account
 
 def current_admin(req):
     u=current_account(req)
+    if u.get('active_mode')!='admin':
+        raise HTTPException(403,'Hãy chuyển về chế độ ADMIN để sử dụng trang quản trị.')
     try:
         require_admin_account(u['id'])
     except PermissionError as e:
@@ -216,7 +225,7 @@ def _job_owned(store: dict, job_id: str, user: dict):
 async def audit_employee_actions(req:Request, call_next):
     response=await call_next(req)
     try:
-        if req.method.upper() in ('POST','PUT','PATCH','DELETE') and req.url.path.startswith('/api/') and not req.url.path.startswith('/api/admin/') and req.url.path not in ('/api/auth/login','/api/auth/logout','/api/auth/register','/api/auth/register-admin'):
+        if req.method.upper() in ('POST','PUT','PATCH','DELETE') and req.url.path.startswith('/api/') and not req.url.path.startswith('/api/admin/') and req.url.path not in ('/api/auth/login','/api/auth/logout','/api/auth/register','/api/auth/register-admin','/api/auth/switch-mode'):
             u=get_user(req.cookies.get(config.SESSION_COOKIE))
             if u and response.status_code < 400:
                 record_activity(u['id'],activity_name(req.url.path,req.method),req.url.path,req.method,response.status_code,'')
@@ -316,20 +325,18 @@ async def map_columns_two_layer(columns, raw_records, provider, company_id=None)
 def root(req:Request):
     try:
         account=current_account(req)
-        if account.get('role')=='admin':
+        if account.get('role')=='admin' and account.get('active_mode')=='admin':
             current_admin(req); return RedirectResponse('/admin',status_code=303)
         current_user(req); return RedirectResponse('/app',status_code=303)
     except HTTPException:
-        return FileResponse(FRONTEND/'pages/login.html')
+        return FileResponse(FRONTEND/'pages/login.html',headers={'Cache-Control':'no-store'})
 @app.get('/app')
 def app_page(req:Request):
     try:
-        account=current_account(req)
-        if account.get('role')=='admin':return RedirectResponse('/admin',status_code=303)
         current_user(req)
     except HTTPException:
         return RedirectResponse('/',status_code=303)
-    return FileResponse(FRONTEND/'index.html')
+    return FileResponse(FRONTEND/'index.html',headers={'Cache-Control':'no-store'})
 @app.get('/admin')
 def admin_page(req:Request):
     try:
@@ -339,7 +346,7 @@ def admin_page(req:Request):
             current_user(req); return RedirectResponse('/app',status_code=303)
         except HTTPException:
             return RedirectResponse('/',status_code=303)
-    return FileResponse(FRONTEND/'admin.html')
+    return FileResponse(FRONTEND/'admin.html',headers={'Cache-Control':'no-store'})
 
 @app.get('/api/auth/admin-status')
 def auth_admin_status():
@@ -451,9 +458,11 @@ def login(req:Request,b:Auth,res:Response):
     account=get_account(uid)
     if not account or not int(account.get('is_active') or 0):
         raise HTTPException(403,'Tài khoản đã bị vô hiệu hóa. Hãy liên hệ ADMIN.')
+    token=create_session(uid)
+    account['active_mode']='admin' if account.get('role')=='admin' else 'employee'
     res.set_cookie(
         config.SESSION_COOKIE,
-        create_session(uid),
+        token,
         httponly=True,
         secure=config.SESSION_COOKIE_SECURE,
         samesite='lax',
@@ -471,6 +480,25 @@ def logout(req:Request,res:Response):
     return {'ok':True}
 @app.get('/api/auth/me')
 def me(req:Request):return current_account(req)
+
+@app.post('/api/auth/switch-mode')
+def switch_mode(req:Request,b:SessionModeBody):
+    enforce_rate_limit(req,'switch-mode',30,60)
+    account=current_account(req)
+    mode=str(b.mode or '').strip().lower()
+    if account.get('role')!='admin' and mode!='employee':
+        raise HTTPException(403,'Nhân viên không thể chuyển sang chế độ ADMIN.')
+    try:
+        changed=set_session_mode(req.cookies.get(config.SESSION_COOKIE),account['id'],mode)
+    except ValueError as e:
+        raise HTTPException(400,str(e))
+    except PermissionError as e:
+        raise HTTPException(403,str(e))
+    if not changed:
+        raise HTTPException(401,'Phiên đăng nhập không còn hợp lệ.')
+    redirect='/admin' if mode=='admin' else '/app'
+    record_activity(account['id'],f'Chuyển sang chế độ {"ADMIN" if mode=="admin" else "nhân viên"}','/api/auth/switch-mode','POST',200,mode)
+    return {'ok':True,'active_mode':mode,'redirect':redirect}
 
 @app.get('/api/admin/profile')
 def admin_profile(req:Request):
