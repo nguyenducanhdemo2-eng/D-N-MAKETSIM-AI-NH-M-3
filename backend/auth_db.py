@@ -53,6 +53,7 @@ def init_auth():
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 last_seen_at TEXT,
+                active_mode TEXT NOT NULL DEFAULT 'employee',
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
@@ -62,6 +63,15 @@ def init_auth():
             c.execute('ALTER TABLE web_sessions ADD COLUMN expires_at TEXT')
         if 'last_seen_at' not in cols:
             c.execute('ALTER TABLE web_sessions ADD COLUMN last_seen_at TEXT')
+        if 'active_mode' not in cols:
+            c.execute("ALTER TABLE web_sessions ADD COLUMN active_mode TEXT DEFAULT 'employee'")
+            c.execute("""
+                UPDATE web_sessions
+                SET active_mode=CASE
+                    WHEN (SELECT role FROM users WHERE users.id=web_sessions.user_id)='admin' THEN 'admin'
+                    ELSE 'employee'
+                END
+            """)
 
         # Tokens shipped in an older database may already have been exposed. The
         # one-time schema migration therefore revokes them instead of trusting or
@@ -92,9 +102,11 @@ def create_session(user_id: int) -> str:
     now=_utcnow()
     expires=now+timedelta(seconds=config.SESSION_MAX_AGE_SECONDS)
     with _conn() as c:
+        account=c.execute('SELECT role FROM users WHERE id=?',(int(user_id),)).fetchone()
+        active_mode='admin' if account and account['role']=='admin' else 'employee'
         c.execute(
-            'INSERT INTO web_sessions(token,user_id,created_at,expires_at,last_seen_at) VALUES (?,?,?,?,?)',
-            (_token_digest(token),int(user_id),_iso(now),_iso(expires),_iso(now)),
+            'INSERT INTO web_sessions(token,user_id,created_at,expires_at,last_seen_at,active_mode) VALUES (?,?,?,?,?,?)',
+            (_token_digest(token),int(user_id),_iso(now),_iso(expires),_iso(now),active_mode),
         )
         c.commit()
     return token
@@ -111,7 +123,7 @@ def get_user(token: str | None):
         # Raw-token lookup exists only to migrate an unexpired legacy row. New
         # sessions always store the digest, never the bearer token itself.
         row=c.execute("""
-            SELECT s.token,s.user_id,s.created_at,s.expires_at,s.last_seen_at,u.id,u.email
+            SELECT s.token,s.user_id,s.created_at,s.expires_at,s.last_seen_at,s.active_mode,u.id,u.email,u.role
             FROM web_sessions s JOIN users u ON u.id=s.user_id
             WHERE s.token IN (?,?)
             ORDER BY CASE WHEN s.token=? THEN 0 ELSE 1 END
@@ -138,7 +150,35 @@ def get_user(token: str | None):
         else:
             c.execute('UPDATE web_sessions SET last_seen_at=? WHERE token=?',(_iso(now),digest))
         c.commit()
-        return {'id':int(row['id']),'email':row['email']}
+        active_mode=str(row['active_mode'] or '').lower()
+        if row['role']!='admin' or active_mode not in ('admin','employee'):
+            active_mode='employee'
+        return {'id':int(row['id']),'email':row['email'],'active_mode':active_mode}
+
+
+def set_session_mode(token: str | None, user_id: int, mode: str) -> bool:
+    """Switch only the current session; employees can never elevate to ADMIN."""
+    if not token:
+        return False
+    mode=str(mode or '').strip().lower()
+    if mode not in ('admin','employee'):
+        raise ValueError('Chế độ phải là admin hoặc employee.')
+    init_auth()
+    digest=_token_digest(token)
+    with _conn() as c:
+        account=c.execute('SELECT role,is_active,company_id FROM users WHERE id=?',(int(user_id),)).fetchone()
+        if not account or not int(account['is_active'] or 0):
+            return False
+        if mode=='admin' and account['role']!='admin':
+            raise PermissionError('Nhân viên không thể chuyển sang chế độ ADMIN.')
+        if account['company_id'] is None:
+            raise PermissionError('Tài khoản chưa thuộc doanh nghiệp nào.')
+        cur=c.execute(
+            'UPDATE web_sessions SET active_mode=?,last_seen_at=? WHERE token IN (?,?) AND user_id=?',
+            (mode,_iso(_utcnow()),digest,token,int(user_id)),
+        )
+        c.commit()
+        return bool(cur.rowcount)
 
 
 def delete_session(token: str | None):
