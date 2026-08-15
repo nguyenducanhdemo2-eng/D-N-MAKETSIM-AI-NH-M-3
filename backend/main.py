@@ -329,14 +329,14 @@ def root(req:Request):
             current_admin(req); return RedirectResponse('/admin',status_code=303)
         current_user(req); return RedirectResponse('/app',status_code=303)
     except HTTPException:
-        return FileResponse(FRONTEND/'pages/login.html',headers={'Cache-Control':'no-store'})
+        return FileResponse(FRONTEND/'pages/login.html')
 @app.get('/app')
 def app_page(req:Request):
     try:
         current_user(req)
     except HTTPException:
         return RedirectResponse('/',status_code=303)
-    return FileResponse(FRONTEND/'index.html',headers={'Cache-Control':'no-store'})
+    return FileResponse(FRONTEND/'index.html')
 @app.get('/admin')
 def admin_page(req:Request):
     try:
@@ -346,7 +346,7 @@ def admin_page(req:Request):
             current_user(req); return RedirectResponse('/app',status_code=303)
         except HTTPException:
             return RedirectResponse('/',status_code=303)
-    return FileResponse(FRONTEND/'admin.html',headers={'Cache-Control':'no-store'})
+    return FileResponse(FRONTEND/'admin.html')
 
 @app.get('/api/auth/admin-status')
 def auth_admin_status():
@@ -695,6 +695,7 @@ async def staged_learning_start(req:Request,session_id:str):
     jid=str(uuid.uuid4())
     _job_register(staged_learning_jobs,jid,u,'ai_learning',{'status':'running','progress':0,'step':'Chuẩn bị dữ liệu','session_id':session_id,'error':None,'audit':None},{'session_id':session_id})
     async def worker():
+        upload_id=None
         try:
             from schema_mapper import CANONICAL_SCHEMA
             df=st['df'].copy()
@@ -744,15 +745,25 @@ async def staged_learning_start(req:Request,session_id:str):
                 if _i < len(provenance):
                     _rec['_field_sources']={str(k):str(v) for k,v in provenance.iloc[_i].to_dict().items()}
             upload_id=save_uploaded_dataset(st['filename'],safe_records,list(learned_df.columns),'staged_web_upload',user_id=u['id'])
+            staged_learning_jobs[jid].update(progress=84,step='Lưu khách hàng đã chuẩn hóa')
+            await asyncio.sleep(0)
             save_canonical_customers(upload_id,safe_records)
+            staged_learning_jobs[jid].update(progress=88,step='Lưu báo cáo audit')
+            await asyncio.sleep(0)
             audit_id=save_learning_audit(upload_id,st['filename'],audit,mapping,audit.get('remaining_missing_fields',[]),user_id=u['id'])
             # Downstream logic is the SAME existing MarketSim pipeline.
+            staged_learning_jobs[jid].update(progress=91,step='Tính Customer Intelligence')
+            await asyncio.sleep(0)
             intelligence=build_customer_intelligence(safe_records); save_customer_intelligence_features(intelligence,upload_id)
+            staged_learning_jobs[jid].update(progress=95,step='Phân nhóm khách hàng')
+            await asyncio.sleep(0)
             seg=hybrid_segment_customers(intelligence,n_clusters=None,random_state=config.RANDOM_STATE)
             labeled=seg.get('labeled_df',intelligence); profiles=seg.get('profiles',{})
             if not labeled.empty and 'segment_id' in labeled.columns:
                 save_customer_segments(labeled,profiles,upload_id,seg.get('silhouette'))
                 save_segmentation_run(upload_id,seg)
+            staged_learning_jobs[jid].update(progress=98,step='Tạo chân dung khách hàng')
+            await asyncio.sleep(0)
             personas=build_data_driven_personas(labeled,profiles) if not labeled.empty else []
             if personas: save_customer_personas(personas,upload_id)
             st.update({'upload_id':upload_id,'audit_id':audit_id,'learned_records':safe_records,'audit':audit,'learning':learning,'df':labeled,'personas':personas,'profiles':profiles,'segmentation_quality':seg.get('quality',{}),'twins':[]})
@@ -761,8 +772,18 @@ async def staged_learning_start(req:Request,session_id:str):
             staged_learning_jobs[jid].update(status='completed',progress=100,step='Hoàn thành — chờ người dùng xác nhận audit',audit=audit,audit_id=audit_id,dataset_id=upload_id,filled_counts=filled)
             update_background_job(jid,u['id'],status='completed',progress=100,result={'audit_id':audit_id,'dataset_id':upload_id,'session_id':session_id})
         except Exception as e:
+            print(f'[AI LEARNING JOB ERROR] job={jid} error={type(e).__name__}: {e}', flush=True)
             staged_learning_jobs[jid].update(status='failed',error=str(e))
-            update_background_job(jid,u['id'],status='failed',progress=staged_learning_jobs[jid].get('progress',0),error=str(e))
+            # A failed unconfirmed run must not leave a misleading dataset card.
+            if upload_id is not None:
+                try:
+                    delete_ai_learning_dataset(u['id'],upload_id)
+                except Exception as cleanup_error:
+                    print(f'[AI LEARNING CLEANUP ERROR] job={jid} upload_id={upload_id} error={type(cleanup_error).__name__}: {cleanup_error}', flush=True)
+            try:
+                update_background_job(jid,u['id'],status='failed',progress=staged_learning_jobs[jid].get('progress',0),error=str(e))
+            except Exception as persist_error:
+                print(f'[AI LEARNING STATUS ERROR] job={jid} error={type(persist_error).__name__}: {persist_error}', flush=True)
     asyncio.create_task(worker())
     return {'ok':True,'job_id':jid}
 

@@ -7,6 +7,7 @@
 import sqlite3
 import os
 import json
+import math
 import re
 import hashlib
 import hmac
@@ -504,6 +505,36 @@ def database_runtime_info() -> dict:
         "persistent_disk_ready":path.startswith('/var/data/') or bool(os.getenv('MARKETSIM_PERSISTENT_DISK','').lower() in {'1','true','yes','on'}),
     }
 
+def _canonical_text_value(value):
+    """Normalize one canonical text value for SQLite binding."""
+    if isinstance(value, dict):
+        candidate = value.get("value")
+        value = candidate if not isinstance(candidate, (dict, list, tuple, set)) else value
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return str(value)
+
+
+def _canonical_number_value(value):
+    """Normalize one canonical numeric value for SQLite binding."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def save_canonical_customers(upload_id: int, records: list):
     """Lưu danh sách khách hàng ĐÃ CHUẨN HÓA (sau schema_mapper.apply_mapping()
     + data_preprocessor bù dữ liệu thiếu) vào bảng canonical_customers.
@@ -513,31 +544,38 @@ def save_canonical_customers(upload_id: int, records: list):
     init_db()
     conn = _connect()
     cursor = conn.cursor()
-    for r in records:
-        cursor.execute(
-            """INSERT INTO canonical_customers
+    sql = """INSERT INTO canonical_customers
                (upload_id, customer_id, age, gender, job, location, total_spending,
                 pain_point, personality, interest_keywords, last_purchase_date,
                 order_count, average_order_value, discount_usage, product_category,
                 channel, device, acquisition_source, review_text, monthly_income,
                 signup_date, return_count, website_visits_30d, email_open_rate,
                 cart_abandon_rate, satisfaction_score, loyalty_tier, provenance_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                upload_id, r.get("customer_id"), r.get("age"), r.get("gender"),
-                r.get("job"), r.get("location"), r.get("total_spending"),
-                r.get("pain_point"), r.get("personality"), r.get("interest_keywords"),
-                r.get("last_purchase_date"), r.get("order_count"), r.get("average_order_value"),
-                r.get("discount_usage"), r.get("product_category"), r.get("channel"),
-                r.get("device"), r.get("acquisition_source"), r.get("review_text"),
-                r.get("monthly_income"), r.get("signup_date"), r.get("return_count"),
-                r.get("website_visits_30d"), r.get("email_open_rate"), r.get("cart_abandon_rate"),
-                r.get("satisfaction_score"), r.get("loyalty_tier"),
-                json.dumps(r.get("_field_sources", {}), ensure_ascii=False),
-            ),
-        )
-    conn.commit()
-    conn.close()
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    rows = [(
+        upload_id, _canonical_text_value(r.get("customer_id")), _canonical_number_value(r.get("age")),
+        _canonical_text_value(r.get("gender")), _canonical_text_value(r.get("job")),
+        _canonical_text_value(r.get("location")), _canonical_number_value(r.get("total_spending")),
+        _canonical_text_value(r.get("pain_point")), _canonical_text_value(r.get("personality")),
+        _canonical_text_value(r.get("interest_keywords")), _canonical_text_value(r.get("last_purchase_date")),
+        _canonical_number_value(r.get("order_count")), _canonical_number_value(r.get("average_order_value")),
+        _canonical_number_value(r.get("discount_usage")), _canonical_text_value(r.get("product_category")),
+        _canonical_text_value(r.get("channel")), _canonical_text_value(r.get("device")),
+        _canonical_text_value(r.get("acquisition_source")), _canonical_text_value(r.get("review_text")),
+        _canonical_number_value(r.get("monthly_income")), _canonical_text_value(r.get("signup_date")),
+        _canonical_number_value(r.get("return_count")), _canonical_number_value(r.get("website_visits_30d")),
+        _canonical_number_value(r.get("email_open_rate")), _canonical_number_value(r.get("cart_abandon_rate")),
+        _canonical_number_value(r.get("satisfaction_score")), _canonical_text_value(r.get("loyalty_tier")),
+        json.dumps(r.get("_field_sources", {}), ensure_ascii=False, default=str),
+    ) for r in records]
+    try:
+        cursor.executemany(sql, rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def load_canonical_customers(upload_id: int = None, limit: int = 5000, user_id: int | None = None, confirmed_only: bool = True) -> list:

@@ -115,6 +115,37 @@ def _top_values(series, n=8):
     return [{"value": str(k), "count": int(v)} for k, v in vals.value_counts().head(n).items()]
 
 
+def _normalize_candidate_values(values) -> list:
+    """Return scalar candidate values that are safe to put in a dataframe.
+
+    Groq can mirror the evidence shape used in the prompt and return candidates
+    such as {"value": "Than trong", "count": 103}.  The old implementation
+    copied that whole dictionary into a canonical text column, which later made
+    SQLite fail with "type 'dict' is not supported".  Keep only the observed
+    value and reject nested containers.
+    """
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    normalized = []
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("value")
+        if item is None or isinstance(item, (dict, list, tuple, set)):
+            continue
+        item = _safe(item)
+        if item is None:
+            continue
+        if isinstance(item, str):
+            item = item.strip()
+            if not item:
+                continue
+        if item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
 def _dataset_context(df: pd.DataFrame, mapped_fields: list[str]) -> dict:
     context = {"rows": len(df), "fields": mapped_fields, "stats": {}}
     for field in mapped_fields:
@@ -150,17 +181,20 @@ Chỉ trả JSON: {{"field":"{field}","learned":true|false,"confidence":0.0,"str
     data = json.loads(raw[a:b+1])
     data["field"] = field
     data["confidence"] = max(0.0, min(1.0, float(data.get("confidence", 0))))
-    data["candidate_values"] = data.get("candidate_values") or []
+    data["candidate_values"] = _normalize_candidate_values(data.get("candidate_values"))
     return data
 
 
 def _sample_from_observed(series, candidates, rng):
-    observed = series.dropna().tolist()
-    observed = [x for x in observed if str(x).strip()]
-    if candidates:
-        cand = [x for x in candidates if x not in (None, "")]
-        if cand:
-            return cand[int(rng.randint(0, len(cand)))]
+    # This helper is used only for non-numeric canonical fields.  Convert every
+    # accepted candidate to text so a provider response can never inject a dict
+    # or list into a SQLite-bound column.
+    cand = [str(x).strip() for x in _normalize_candidate_values(candidates)]
+    cand = [x for x in cand if x]
+    if cand:
+        return cand[int(rng.randint(0, len(cand)))]
+    observed = [str(x).strip() for x in _normalize_candidate_values(series.dropna().tolist())]
+    observed = [x for x in observed if x]
     if observed:
         return observed[int(rng.randint(0, len(observed)))]
     return None
@@ -248,4 +282,3 @@ def build_audit(df_before: pd.DataFrame, df_after: pd.DataFrame, provenance: pd.
         "real_cells": int(sum(x["real"] for x in field_coverage.values())), "missing_cells": int(sum(x["missing"] for x in field_coverage.values())),
         "invalid_cells":int(sum(x["invalid"] for x in field_coverage.values())), "digital_twin_readiness":readiness,
     }
-
