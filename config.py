@@ -24,6 +24,14 @@ else:
 TREND_KEYWORDS = [x.strip() for x in os.getenv('TREND_KEYWORDS','thời trang,công nghệ,ẩm thực,du lịch,làm đẹp').split(',') if x.strip()]
 NEWS_URLS = [x.strip() for x in os.getenv('NEWS_URLS','https://vnexpress.net/kinh-doanh,https://cafef.vn').split(',') if x.strip()]
 TRENDS_TIMEFRAME=os.getenv('TRENDS_TIMEFRAME','now 7-d'); TRENDS_GEO=os.getenv('TRENDS_GEO','VN')
+# Pytrends calls an unofficial Google endpoint, so keep requests conservative and
+# cache successful responses to avoid repeated-click bursts and HTTP 429 blocks.
+TRENDS_CACHE_TTL_SECONDS=max(60,int(os.getenv('TRENDS_CACHE_TTL_SECONDS','900')))
+TRENDS_STALE_CACHE_SECONDS=max(TRENDS_CACHE_TTL_SECONDS,int(os.getenv('TRENDS_STALE_CACHE_SECONDS','86400')))
+TRENDS_CONNECT_TIMEOUT_SECONDS=max(2,int(os.getenv('TRENDS_CONNECT_TIMEOUT_SECONDS','10')))
+TRENDS_READ_TIMEOUT_SECONDS=max(5,int(os.getenv('TRENDS_READ_TIMEOUT_SECONDS','25')))
+TRENDS_MAX_RETRIES=max(0,min(3,int(os.getenv('TRENDS_MAX_RETRIES','1'))))
+TRENDS_BATCH_DELAY_SECONDS=max(0.0,float(os.getenv('TRENDS_BATCH_DELAY_SECONDS','1.5')))
 NUM_CLUSTERS=int(os.getenv('NUM_CLUSTERS','3')); RANDOM_STATE=int(os.getenv('RANDOM_STATE','42'))
 OLLAMA_HOST=os.getenv('OLLAMA_HOST','http://127.0.0.1:11434').rstrip('/')
 OLLAMA_MODEL=os.getenv('OLLAMA_MODEL','qwen2.5:7b')

@@ -714,6 +714,57 @@ def get_ai_learning_history(user_id: int, limit: int = 200) -> list:
         })
     return items
 
+
+def get_dataset_learning_detail(user_id: int, upload_id: int) -> dict | None:
+    """Return one owned dataset together with its latest AI Learning audit.
+
+    The ownership predicate is applied to uploaded_datasets before any audit
+    details are returned.  A dataset without an audit is still returned so the
+    UI can explain that AI Learning has not completed instead of showing a
+    misleading empty report.
+    """
+    init_db(); conn=_connect(); conn.row_factory=sqlite3.Row
+    row=conn.execute("""
+        SELECT u.id,u.upload_name,u.uploaded_at,u.record_count,u.columns,u.upload_source,
+               a.id AS audit_id,a.confirmed,a.confirmed_at,a.created_at AS learned_at,
+               a.overall_real_data_pct,a.field_coverage_json,a.mapping_json,
+               a.missing_required_json,a.learning_details_json,
+               (SELECT COUNT(*) FROM canonical_customers cc WHERE cc.upload_id=u.id) AS canonical_count
+        FROM uploaded_datasets u
+        LEFT JOIN learning_audit a ON a.id=(
+            SELECT aa.id FROM learning_audit aa
+            WHERE aa.upload_id=u.id AND aa.user_id=u.user_id
+            ORDER BY aa.id DESC LIMIT 1
+        )
+        WHERE u.id=? AND u.user_id=?
+    """,(int(upload_id),int(user_id))).fetchone(); conn.close()
+    if not row:
+        return None
+    def parsed(value, fallback):
+        try: return json.loads(value) if value else fallback
+        except Exception: return fallback
+    columns=parsed(row['columns'],[])
+    details=parsed(row['learning_details_json'],{})
+    coverage=parsed(row['field_coverage_json'],{})
+    mapping=parsed(row['mapping_json'],[])
+    missing=parsed(row['missing_required_json'],[])
+    if row['audit_id']:
+        details=dict(details or {})
+        details.setdefault('total_records',row['record_count'] or 0)
+        details.setdefault('overall_real_data_pct',row['overall_real_data_pct'] or 0)
+        details.setdefault('field_coverage',coverage)
+        details.setdefault('remaining_missing_fields',missing)
+        details.setdefault('mapping',mapping)
+    state=('confirmed' if bool(row['confirmed']) else 'awaiting_confirmation') if row['audit_id'] else 'not_completed'
+    return {
+        'id':row['id'],'name':row['upload_name'],'uploaded_at':row['uploaded_at'],
+        'records':row['record_count'] or 0,'columns':columns,'source':row['upload_source'],
+        'canonical_customers':row['canonical_count'] or 0,'has_audit':bool(row['audit_id']),
+        'audit_id':row['audit_id'],'confirmed':bool(row['confirmed']),
+        'confirmed_at':row['confirmed_at'],'learned_at':row['learned_at'],
+        'learning_state':state,'audit':details,
+    }
+
 def delete_ai_learning_dataset(user_id: int, upload_id: int) -> dict:
     """Delete one owned learning source and its derived customer artifacts.
 
@@ -883,13 +934,13 @@ def get_uploaded_dataset_count(user_id: int | None = None) -> int:
 def get_user_dataset_history(user_id: int, limit: int = 50) -> list:
     init_db(); conn=_connect(); cursor=conn.cursor()
     cursor.execute("""SELECT u.id,u.upload_name,u.uploaded_at,u.record_count,u.columns,
-                           COALESCE(a.confirmed,0),COALESCE(a.overall_real_data_pct,0),
+                           a.id,COALESCE(a.confirmed,0),COALESCE(a.overall_real_data_pct,0),
                            COALESCE(a.created_at,u.uploaded_at)
                     FROM uploaded_datasets u
-                    LEFT JOIN learning_audit a ON a.id=(SELECT aa.id FROM learning_audit aa WHERE aa.upload_id=u.id ORDER BY aa.id DESC LIMIT 1)
+                    LEFT JOIN learning_audit a ON a.id=(SELECT aa.id FROM learning_audit aa WHERE aa.upload_id=u.id AND aa.user_id=u.user_id ORDER BY aa.id DESC LIMIT 1)
                     WHERE u.user_id=? ORDER BY u.id DESC LIMIT ?""",(user_id,limit))
     rows=cursor.fetchall(); conn.close()
-    return [{"id":r[0],"name":r[1],"uploaded_at":r[2],"records":r[3],"columns":json.loads(r[4]) if r[4] else [],"learning_confirmed":bool(r[5]),"real_data_pct":r[6],"learning_at":r[7]} for r in rows]
+    return [{"id":r[0],"name":r[1],"uploaded_at":r[2],"records":r[3],"columns":json.loads(r[4]) if r[4] else [],"audit_id":r[5],"has_audit":bool(r[5]),"learning_confirmed":bool(r[6]),"real_data_pct":r[7],"learning_at":r[8]} for r in rows]
 
 def get_user_dataset_stats(user_id: int) -> dict:
     init_db(); conn=_connect(); c=conn.cursor()

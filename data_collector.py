@@ -15,6 +15,8 @@ import requests
 import pandas as pd
 import random
 import glob
+import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 try:
@@ -33,12 +35,15 @@ except ImportError:
 
 try:
     from pytrends.request import TrendReq
-    from pytrends.exceptions import TooManyRequestsError
+    from pytrends.exceptions import TooManyRequestsError, ResponseError
     _PYTRENDS_AVAILABLE = True
 except ImportError:
     _PYTRENDS_AVAILABLE = False
 
     class TooManyRequestsError(Exception):
+        pass
+
+    class ResponseError(Exception):
         pass
 
 # Đảm bảo import an toàn từ config.py
@@ -53,6 +58,31 @@ except ImportError:
 except AttributeError:
     from config import TREND_KEYWORDS, NEWS_URLS, TRENDS_TIMEFRAME, TRENDS_GEO
     MAX_UPLOAD_BYTES = 1_000_000_000
+
+try:
+    import config as _app_config
+    TRENDS_CACHE_TTL_SECONDS = max(60, int(getattr(_app_config, "TRENDS_CACHE_TTL_SECONDS", 900)))
+    TRENDS_STALE_CACHE_SECONDS = max(TRENDS_CACHE_TTL_SECONDS, int(getattr(_app_config, "TRENDS_STALE_CACHE_SECONDS", 86400)))
+    TRENDS_CONNECT_TIMEOUT_SECONDS = max(2, int(getattr(_app_config, "TRENDS_CONNECT_TIMEOUT_SECONDS", 10)))
+    TRENDS_READ_TIMEOUT_SECONDS = max(5, int(getattr(_app_config, "TRENDS_READ_TIMEOUT_SECONDS", 25)))
+    TRENDS_MAX_RETRIES = max(0, min(3, int(getattr(_app_config, "TRENDS_MAX_RETRIES", 1))))
+    TRENDS_BATCH_DELAY_SECONDS = max(0.0, float(getattr(_app_config, "TRENDS_BATCH_DELAY_SECONDS", 1.5)))
+except (ImportError, TypeError, ValueError):
+    TRENDS_CACHE_TTL_SECONDS = 900
+    TRENDS_STALE_CACHE_SECONDS = 86400
+    TRENDS_CONNECT_TIMEOUT_SECONDS = 10
+    TRENDS_READ_TIMEOUT_SECONDS = 25
+    TRENDS_MAX_RETRIES = 1
+    TRENDS_BATCH_DELAY_SECONDS = 1.5
+
+
+_TRENDS_COLUMNS = ["keyword", "trend_score", "latest_score", "peak_score", "sample_count", "search_volume"]
+_TRENDS_CACHE = {}
+_TRENDS_CACHE_LOCK = threading.Lock()
+_TRENDS_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 
 def clean_text(raw_text: str) -> str:
@@ -193,38 +223,309 @@ def _aggregate_generic_row_text(row):
     return " ".join(pieces).strip()
 
 
-def fetch_google_trends(keywords=None, timeframe=TRENDS_TIMEFRAME, geo=TRENDS_GEO) -> pd.DataFrame:
-    print("[1a] Đang lấy dữ liệu xu hướng từ Google Trends...")
-    if not _PYTRENDS_AVAILABLE:
-        print("    ⚠ Chưa cài thư viện 'pytrends' (pip install pytrends). Bỏ qua Google Trends.")
-        return pd.DataFrame()
+def _trend_frame(records=None, *, status, source, message, error="", cached=False) -> pd.DataFrame:
+    """Create one stable DataFrame contract plus user-facing collection metadata."""
+    frame = pd.DataFrame(records or [], columns=_TRENDS_COLUMNS)
+    frame.attrs.update({
+        "status": status,
+        "source": source,
+        "message": message,
+        "error": str(error or ""),
+        "cached": bool(cached),
+    })
+    return frame
 
-    keywords = keywords or TREND_KEYWORDS
-    try:
-        pytrends = TrendReq(hl="vi-VN", tz=420)
-    except Exception as e:
-        print(f"    ⚠ Không khởi tạo được kết nối Google Trends: {e}")
-        return pd.DataFrame()
 
+def _copy_trend_frame(frame: pd.DataFrame, **meta_updates) -> pd.DataFrame:
+    copied = frame.copy(deep=True)
+    copied.attrs = dict(getattr(frame, "attrs", {}) or {})
+    copied.attrs.update(meta_updates)
+    return copied
+
+
+def _trend_cache_key(keywords, timeframe, geo):
+    return (tuple(str(item).strip().lower() for item in keywords), str(timeframe), str(geo).upper())
+
+
+def _get_cached_trends(cache_key, max_age_seconds):
+    now = time.time()
+    with _TRENDS_CACHE_LOCK:
+        cached = _TRENDS_CACHE.get(cache_key)
+        if not cached:
+            return None
+        stored_at, frame = cached
+        age = max(0, now - stored_at)
+        if age > max_age_seconds:
+            return None
+        return _copy_trend_frame(frame, cache_age_seconds=int(age), cached=True)
+
+
+def _store_trends_cache(cache_key, frame):
+    if frame is None or frame.empty:
+        return
+    with _TRENDS_CACHE_LOCK:
+        _TRENDS_CACHE[cache_key] = (time.time(), _copy_trend_frame(frame))
+
+
+def _normalize_trend_keywords(keywords):
+    if isinstance(keywords, str):
+        keywords = keywords.split(",")
+    normalized = []
+    seen = set()
+    for item in keywords or []:
+        value = str(item or "").strip()
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            normalized.append(value)
+    return normalized
+
+
+def _classify_trends_error(exc):
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    text = f"{type(exc).__name__}: {exc}"
+    lowered = text.lower()
+    if isinstance(exc, TooManyRequestsError) or status_code == 429 or " 429" in lowered or "code 429" in lowered:
+        return "rate_limited", "Google Trends đang giới hạn tần suất truy cập (HTTP 429)."
+    if status_code == 403 or " 403" in lowered or "code 403" in lowered or "forbidden" in lowered:
+        return "blocked", "Google Trends đang từ chối truy cập từ địa chỉ máy chủ này (HTTP 403)."
+    if isinstance(exc, (requests.Timeout, TimeoutError)) or "timed out" in lowered or "timeout" in lowered:
+        return "timeout", "Kết nối Google Trends quá thời gian chờ."
+    return "upstream_error", "Google Trends hoặc Pytrends trả về phản hồi không hợp lệ."
+
+
+def _new_pytrends_client():
+    # pytrends 4.9 still uses urllib3's removed `method_whitelist` argument when
+    # its built-in retries are enabled. Keep retries at zero here and retry
+    # transient failures explicitly below so modern urllib3 remains compatible.
+    return TrendReq(
+        hl="vi-VN",
+        tz=420,
+        timeout=(TRENDS_CONNECT_TIMEOUT_SECONDS, TRENDS_READ_TIMEOUT_SECONDS),
+        retries=0,
+        backoff_factor=0,
+        requests_args={"headers": {"User-Agent": _TRENDS_USER_AGENT}},
+    )
+
+
+def _fetch_pytrends_interest(keywords, timeframe, geo):
     records = []
-    for i in range(0, len(keywords), 5):
-        batch = keywords[i:i + 5]
-        try:
-            pytrends.build_payload(batch, timeframe=timeframe, geo=geo)
-            trend_df = pytrends.interest_over_time()
-            if not trend_df.empty:
-                for kw in batch:
-                    if kw in trend_df.columns:
-                        records.append({"keyword": kw, "trend_score": float(trend_df[kw].mean())})
-            time.sleep(2)
-        except TooManyRequestsError:
-            print("    ⚠ CẢNH BÁO: Bị Google chặn (429). Đang bỏ qua Google Trends để tránh lỗi...")
-            return pd.DataFrame()
-        except Exception as e:
-            print(f"    ⚠ Lỗi không xác định khi lấy Google Trends: {e}")
-            return pd.DataFrame()
+    last_status = "empty"
+    last_message = "Pytrends không trả dữ liệu cho các từ khóa đã cấu hình."
+    last_error = ""
 
-    return pd.DataFrame(records)
+    for start in range(0, len(keywords), 5):
+        batch = keywords[start:start + 5]
+        batch_ok = False
+        for attempt in range(TRENDS_MAX_RETRIES + 1):
+            try:
+                client = _new_pytrends_client()
+                client.build_payload(batch, timeframe=timeframe, geo=geo)
+                trend_df = client.interest_over_time()
+                if trend_df is not None and not trend_df.empty:
+                    for keyword in batch:
+                        if keyword not in trend_df.columns:
+                            continue
+                        values = pd.to_numeric(trend_df[keyword], errors="coerce").dropna()
+                        if values.empty:
+                            continue
+                        records.append({
+                            "keyword": keyword,
+                            "trend_score": round(float(values.mean()), 2),
+                            "latest_score": round(float(values.iloc[-1]), 2),
+                            "peak_score": round(float(values.max()), 2),
+                            "sample_count": int(values.size),
+                            "search_volume": None,
+                        })
+                batch_ok = True
+                break
+            except Exception as exc:
+                last_status, last_message = _classify_trends_error(exc)
+                last_error = f"{type(exc).__name__}: {exc}"
+                # Retrying a block/rate-limit immediately makes the block worse.
+                if last_status in {"rate_limited", "blocked"} or attempt >= TRENDS_MAX_RETRIES:
+                    break
+                time.sleep(min(4.0, 1.0 * (2 ** attempt)))
+
+        if not batch_ok:
+            if records:
+                return _trend_frame(
+                    records,
+                    status="partial",
+                    source="Google Trends (Pytrends)",
+                    message=f"Đã lấy một phần dữ liệu. {last_message}",
+                    error=last_error,
+                )
+            return _trend_frame(
+                status=last_status,
+                source="Google Trends (Pytrends)",
+                message=last_message,
+                error=last_error,
+            )
+
+        if start + 5 < len(keywords) and TRENDS_BATCH_DELAY_SECONDS:
+            time.sleep(TRENDS_BATCH_DELAY_SECONDS)
+
+    if records:
+        return _trend_frame(
+            records,
+            status="live",
+            source="Google Trends (Pytrends)",
+            message=f"Đã cập nhật {len(records)} từ khóa trực tiếp từ Google Trends.",
+        )
+    return _trend_frame(
+        status="empty",
+        source="Google Trends (Pytrends)",
+        message="Pytrends kết nối thành công nhưng không có dữ liệu cho từ khóa và khoảng thời gian đã chọn.",
+    )
+
+
+def _parse_approx_traffic(value):
+    text = str(value or "").upper().replace(",", "").replace("+", "").strip()
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*([KMB]?)", text)
+    if not match:
+        return 0
+    multipliers = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
+    return int(float(match.group(1)) * multipliers.get(match.group(2), 1))
+
+
+def _xml_local_text(node, local_name):
+    for child in list(node):
+        if str(child.tag).split("}")[-1] == local_name:
+            return (child.text or "").strip()
+    return ""
+
+
+def _fetch_google_trends_rss(geo, reason_message=""):
+    """Fallback to Google's exported Trending Now RSS when the unofficial API is blocked."""
+    try:
+        response = requests.get(
+            "https://trends.google.com/trending/rss",
+            params={"geo": str(geo or "VN").upper()},
+            headers={"User-Agent": _TRENDS_USER_AGENT, "Accept": "application/rss+xml, application/xml;q=0.9"},
+            timeout=(TRENDS_CONNECT_TIMEOUT_SECONDS, TRENDS_READ_TIMEOUT_SECONDS),
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        raw_items = []
+        seen = set()
+        for item in root.findall(".//item"):
+            title = _xml_local_text(item, "title")
+            if not title or title.casefold() in seen:
+                continue
+            seen.add(title.casefold())
+            traffic_text = _xml_local_text(item, "approx_traffic")
+            raw_items.append((title, traffic_text, _parse_approx_traffic(traffic_text)))
+        if not raw_items:
+            return _trend_frame(
+                status="rss_empty",
+                source="Google Trends RSS",
+                message="Google Trends RSS đã phản hồi nhưng không có xu hướng cho khu vực này.",
+            )
+
+        max_volume = max((item[2] for item in raw_items), default=0)
+        records = []
+        for rank, (title, traffic_text, volume) in enumerate(raw_items[:20], start=1):
+            score = round((volume / max_volume) * 100, 2) if max_volume else round(max(1.0, 101.0 - rank * 5.0), 2)
+            records.append({
+                "keyword": title,
+                "trend_score": score,
+                "latest_score": score,
+                "peak_score": score,
+                "sample_count": 1,
+                "search_volume": traffic_text or None,
+            })
+        prefix = f"{reason_message} " if reason_message else ""
+        return _trend_frame(
+            records,
+            status="rss_fallback",
+            source="Google Trends RSS",
+            message=f"{prefix}Đang hiển thị {len(records)} xu hướng mới nhất từ RSS chính thức của Google Trends.",
+        )
+    except Exception as exc:
+        status, message = _classify_trends_error(exc)
+        return _trend_frame(
+            status=f"rss_{status}",
+            source="Google Trends RSS",
+            message=f"Không thể lấy cả dữ liệu Pytrends lẫn Google Trends RSS. {message}",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def fetch_pytrends(keywords=None, timeframe=TRENDS_TIMEFRAME, geo=TRENDS_GEO) -> pd.DataFrame:
+    """Collect Trends data without crashing the API when Google's unofficial endpoint changes.
+
+    Pytrends remains the primary source for configured keywords. A short-lived
+    cache prevents repeated clicks from creating a burst of Google requests.
+    If Google blocks the unofficial endpoint, the function first reuses a stale
+    successful result and then falls back to Google's exported Trending Now RSS.
+    Status, source and a Vietnamese explanation are stored in ``DataFrame.attrs``.
+    """
+    print("[1a] Đang lấy dữ liệu xu hướng từ Google Trends...")
+    normalized_keywords = _normalize_trend_keywords(keywords or TREND_KEYWORDS)
+    cache_key = _trend_cache_key(normalized_keywords, timeframe, geo)
+
+    fresh = _get_cached_trends(cache_key, TRENDS_CACHE_TTL_SECONDS)
+    if fresh is not None:
+        age = int(fresh.attrs.get("cache_age_seconds", 0))
+        return _copy_trend_frame(
+            fresh,
+            status="cache",
+            message=f"Dùng dữ liệu Google Trends đã cập nhật cách đây {age} giây để tránh gửi yêu cầu lặp.",
+            cached=True,
+        )
+
+    if not normalized_keywords:
+        return _trend_frame(
+            status="invalid_config",
+            source="Google Trends",
+            message="Chưa cấu hình từ khóa. Hãy thêm TREND_KEYWORDS trong file .env.",
+        )
+
+    if _PYTRENDS_AVAILABLE:
+        primary = _fetch_pytrends_interest(normalized_keywords, timeframe, geo)
+    else:
+        primary = _trend_frame(
+            status="unavailable",
+            source="Google Trends (Pytrends)",
+            message="Máy chủ chưa cài Pytrends. Hãy chạy pip install -r requirements.txt rồi khởi động lại.",
+            error="ModuleNotFoundError: pytrends",
+        )
+
+    if not primary.empty:
+        _store_trends_cache(cache_key, primary)
+        return primary
+
+    stale = _get_cached_trends(cache_key, TRENDS_STALE_CACHE_SECONDS)
+    if stale is not None:
+        age = int(stale.attrs.get("cache_age_seconds", 0))
+        return _copy_trend_frame(
+            stale,
+            status="stale_cache",
+            source=f"{stale.attrs.get('source', 'Google Trends')} (bộ nhớ đệm)",
+            message=f"{primary.attrs.get('message', '')} Đang dùng bản gần nhất cách đây {age} giây.",
+            error=primary.attrs.get("error", ""),
+            cached=True,
+        )
+
+    fallback = _fetch_google_trends_rss(geo, primary.attrs.get("message", ""))
+    if not fallback.empty:
+        _store_trends_cache(cache_key, fallback)
+        return fallback
+
+    combined_error = "; ".join(filter(None, [primary.attrs.get("error", ""), fallback.attrs.get("error", "")]))
+    return _copy_trend_frame(
+        fallback,
+        status=primary.attrs.get("status", fallback.attrs.get("status", "upstream_error")),
+        message=fallback.attrs.get("message") or primary.attrs.get("message"),
+        error=combined_error,
+    )
+
+
+def fetch_google_trends(keywords=None, timeframe=TRENDS_TIMEFRAME, geo=TRENDS_GEO) -> pd.DataFrame:
+    """Backward-compatible name used by the offline/online collection pipeline."""
+    return fetch_pytrends(keywords=keywords, timeframe=timeframe, geo=geo)
 
 
 def fetch_news(urls=None) -> list:
