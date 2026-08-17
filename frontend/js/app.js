@@ -140,20 +140,21 @@ function parseMaybeJson(v){ if(typeof v!=='string') return v||{}; try{return JSO
 function renderInspection(inspection){
   if(!inspection) return;
   setHidden('stagedPreview', false);
-  const q=inspection.quality||{}, dims=q.dimensions||{}, issues=q.issues||[];
+  const q=inspection.quality||{}, dims=q.dimensions||{}, issues=q.issues||[], gates=q.gates||[];
+  const displayedIssues=[...gates.map(x=>({severity:'danger',column:'Ngưỡng chất lượng',message:`${x.message} — điểm tối đa ${pct(x.cap)}/100`})),...issues];
   const cards=el('stagedSummaryCards');
   if(cards) cards.innerHTML=`
     <div class="stat"><span>Khách hàng / dòng</span><b>${Number(inspection.rows||0).toLocaleString()}</b></div>
     <div class="stat"><span>Số cột</span><b>${Number(inspection.columns_count||0).toLocaleString()}</b></div>
     <div class="stat"><span>Chất lượng dữ liệu</span><b>${pct(q.score)} / 100</b><small>${esc(q.label||'')}</small></div>
-    <div class="stat"><span>Vấn đề cần xem</span><b>${Number(issues.length).toLocaleString()}</b></div>`;
+    <div class="stat"><span>Vấn đề cần xem</span><b>${Number(displayedIssues.length).toLocaleString()}</b></div>`;
   if(el('qualityScore')) el('qualityScore').textContent=`${pct(q.score)} / 100`;
   if(el('qualityLabel')) el('qualityLabel').textContent=q.label||'Chưa đánh giá';
   const dim=el('qualityDimensions'); if(dim) dim.innerHTML=Object.entries({
     'Độ đầy đủ':dims.completeness,'Tính hợp lệ':dims.validity,'Tính nhất quán':dims.consistency,
     'Không trùng lặp':dims.uniqueness,'Độ mới dữ liệu':dims.freshness,'Độ chắc chắn schema':dims.schema_confidence
   }).map(([k,v])=>`<div class="quality-dim"><span>${esc(k)}</span><b>${pct(v)}%</b><div class="quality-meter"><i style="width:${Math.max(0,Math.min(100,Number(v)||0))}%"></i></div></div>`).join('');
-  const issueBox=el('qualityIssues'); if(issueBox) issueBox.innerHTML=issues.length?issues.slice(0,20).map(x=>`<div class="quality-issue ${esc(x.severity||'warning')}"><b>${esc(x.column||'Toàn bộ file')}</b><span>${esc(x.message||'')}</span></div>`).join(''):'<div class="quality-ok">✓ Chưa phát hiện vấn đề nghiêm trọng ở bước kiểm tra tự động.</div>';
+  const issueBox=el('qualityIssues'); if(issueBox) issueBox.innerHTML=displayedIssues.length?displayedIssues.slice(0,20).map(x=>`<div class="quality-issue ${esc(x.severity||'warning')}"><b>${esc(x.column||'Toàn bộ file')}</b><span>${esc(x.message||'')}</span></div>`).join(''):'<div class="quality-ok">✓ Chưa phát hiện vấn đề nghiêm trọng ở bước kiểm tra tự động.</div>';
   if(el('stagedFileName')) el('stagedFileName').textContent=inspection.filename||'';
   const colBody=el('stagedColumnsTable')?.querySelector('tbody');
   if(colBody) colBody.innerHTML=(inspection.columns||[]).map(c=>`<tr>
@@ -214,7 +215,7 @@ function renderAudit(audit, confirmed=false){
   if(el('readinessOverall')) el('readinessOverall').textContent=`${pct(ready.overall)}%`;
   if(el('readinessStatus')){el('readinessStatus').textContent=ready.status==='READY'?'Sẵn sàng':ready.status==='CAUTION'?'Cần cân nhắc':'Chưa khuyến nghị';el('readinessStatus').className='status '+(ready.status==='READY'?'ok':ready.status==='CAUTION'?'wait':'bad');}
   const areas=el('readinessAreas');if(areas)areas.innerHTML=Object.entries(ready.areas||{}).map(([n,v])=>`<div class="readiness-row"><span>${esc(n)}</span><div class="quality-meter"><i style="width:${Number(v)||0}%"></i></div><b>${pct(v)}%</b></div>`).join('');
-  if(el('readinessMessage'))el('readinessMessage').textContent=ready.message||'';
+  if(el('readinessMessage'))el('readinessMessage').textContent=[ready.message,...(ready.gate_reasons||[])].filter(Boolean).join(' ');
   if(el('stagedAuditExplain')) el('stagedAuditExplain').textContent=`Dữ liệu gốc ${pct(audit.overall_real_data_pct)}% · Tính từ dữ liệu gốc ${pct(audit.overall_derived_real_pct)}% · AI bổ sung ${pct(audit.overall_ai_inferred_pct)}% · Còn thiếu ${pct(audit.overall_missing_pct)}%. ${Number(audit.invalid_cells||0)} ô không hợp lệ đã được tách riêng trước khi AI phân tích.`;
   const confirm=el('stagedConfirmLearning'); if(confirm){confirm.disabled=!!confirmed;confirm.textContent=confirmed?'Đã xác nhận dữ liệu':'5. Xác nhận & cho phép tạo Digital Twin';}
   if(el('auditReliability'))el('auditReliability').textContent=`Quality ${pct(quality.score||audit.overall_real_data_pct)} / 100`;

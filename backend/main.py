@@ -25,7 +25,7 @@ from .admin_db import (init_admin_schema, admin_count, company_count, get_accoun
     normalize_join_code, record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
 from .ai_provider import check_all, check_groq, check_ollama, chat
 from .ai_bridge import call_text
-from staged_data_workflow import inspect_dataframe, apply_learned_fields, build_audit
+from staged_data_workflow import inspect_dataframe, inspect_dataframe_with_mapping, apply_learned_fields, build_audit
 from data_quality_engine import detect_possible_duplicates, sanitize_canonical, derive_real_features, data_drift
 from .security import enforce_rate_limit, rate_limiter, read_upload_limited
 
@@ -641,6 +641,7 @@ async def staged_confirm_inspection(req:Request,session_id:str):
         historical_rows=load_canonical_customers(limit=50000,user_id=u['id'],confirmed_only=True)
         drift=data_drift(current_canonical,pd.DataFrame(historical_rows) if historical_rows else pd.DataFrame())
         st['mapping']=mapping; st['inspection_confirmed']=True; st['missing_required']=missing; st['duplicates']=duplicates; st['drift']=drift
+        st['inspection']=inspect_dataframe_with_mapping(df,st['filename'],mapping)
         return json_safe({'ok':True,'session_id':session_id,'mapping':mapping,'missing_required_fields':missing,'duplicates':duplicates,'drift':drift,'message':'Đã xác nhận dữ liệu. Mapping hoàn thành; hệ thống cũng đã kiểm tra trùng lặp và độ lệch so với lịch sử.'})
     except Exception as e:
         raise HTTPException(400,'Không thể mapping dữ liệu: '+str(e))
@@ -679,7 +680,9 @@ def staged_update_mapping(req:Request,session_id:str,body:MappingBody):
     historical_rows=load_canonical_customers(limit=50000,user_id=u['id'],confirmed_only=True)
     drift=data_drift(current_canonical,pd.DataFrame(historical_rows) if historical_rows else pd.DataFrame())
     st['mapping']=cleaned; st['missing_required']=missing; st['duplicates']=duplicates; st['drift']=drift
-    return json_safe({'ok':True,'mapping':cleaned,'missing_required_fields':missing,'duplicates':duplicates,'drift':drift,'message':'Đã lưu mapping bạn xác nhận. Bước này không gọi AI.'})
+    st['inspection']=inspect_dataframe_with_mapping(df,st['filename'],cleaned)
+    return json_safe({'ok':True,'mapping':cleaned,'missing_required_fields':missing,'duplicates':duplicates,'drift':drift,
+                      'quality':st['inspection'].get('quality',{}),'message':'Đã lưu mapping bạn xác nhận. Bước này không gọi AI.'})
 
 @app.post('/api/customers/learning/start/{session_id}')
 async def staged_learning_start(req:Request,session_id:str):
@@ -728,11 +731,13 @@ async def staged_learning_start(req:Request,session_id:str):
                     learning[field]={'field':field,'learned':False,'confidence':0,'strategy':'not_enough_evidence','evidence':f'AI không thể học trường này: {e}','candidate_values':[],'notes':''}
             staged_learning_jobs[jid].update(progress=70,step='Bổ sung các trường còn thiếu')
             learned_df,provenance,filled=apply_learned_fields(canonical_df,learning,initial_provenance=initial_provenance)
+            mapped_inspection=inspect_dataframe_with_mapping(df,st['filename'],mapping)
+            st['inspection']=mapped_inspection
             audit=build_audit(canonical_df,learned_df,provenance,learning)
             audit['filled_counts']=filled
             audit['invalid_source_summary']=invalid_summary
             audit['derived_real_summary']=derived_summary
-            audit['data_quality']=st.get('inspection',{}).get('quality',{})
+            audit['data_quality']=mapped_inspection.get('quality',{})
             audit['duplicates']=st.get('duplicates',{})
             audit['data_drift']=st.get('drift',{})
             audit['learning_provider']=provider

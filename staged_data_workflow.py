@@ -109,6 +109,26 @@ def inspect_dataframe(df: pd.DataFrame, filename: str, rule_mapper) -> dict:
     return profile_dataframe(df, filename, rule_mapper)
 
 
+def inspect_dataframe_with_mapping(df: pd.DataFrame, filename: str, mappings: list[dict]) -> dict:
+    """Recalculate quality after AI/human schema mapping has been confirmed.
+
+    The first inspection is deliberately rule-only.  Without this second pass,
+    a file with unusual column names would keep its pre-mapping score even after
+    the user had confirmed every field.
+    """
+    by_source={str(item.get('source_column')):item for item in (mappings or [])}
+
+    def confirmed_mapper(column: str):
+        item=by_source.get(str(column),{})
+        field=item.get('canonical_field')
+        if field in (None,'unmapped','unknown_column'):
+            return None,0.0,item.get('reasoning') or 'Chưa xác nhận ánh xạ.'
+        confidence=float(item.get('confidence',1.0) or 0.0)
+        return field,confidence,item.get('reasoning') or 'Ánh xạ đã được xác nhận.'
+
+    return profile_dataframe(df,filename,confirmed_mapper)
+
+
 def _top_values(series, n=8):
     vals = series.dropna().astype(str).str.strip()
     vals = vals[vals != ""]

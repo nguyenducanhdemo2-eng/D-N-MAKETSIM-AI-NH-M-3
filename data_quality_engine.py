@@ -4,13 +4,31 @@ Additive only: this module validates/profiles customer data before the existing
 AI Learning -> Segmentation -> Digital Twin pipeline. It never invents values.
 """
 from __future__ import annotations
-import re, math
+import re, math, warnings
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import numpy as np
 import pandas as pd
 
 NULL_STRINGS={"","nan","none","null","n/a","na","unknown","không rõ","khong ro"}
+
+# These fields are the minimum evidence needed for a defensible customer
+# persona.  A weighted average alone can hide severe gaps in one of them, so
+# they are also used as explicit quality gates below.
+REQUIRED_TWIN_FIELDS=('age','job','pain_point','personality','interest_keywords')
+
+# Provenance is part of readiness: an AI-filled value is useful for exploration
+# but cannot be treated as equally reliable as a value supplied by the user.
+PROVENANCE_WEIGHTS={
+    'REAL':1.0,
+    'ORIGINAL':1.0,
+    'DERIVED_REAL':.95,
+    'AI_INFERRED':.55,
+    'LEGACY_UNKNOWN':.50,
+    'MISSING_SOURCE':0.0,
+    'MISSING_INVALID':0.0,
+    'NOT_APPLICABLE':None,
+}
 
 def _blank(s: pd.Series) -> pd.Series:
     return s.isna() | s.astype(str).str.strip().str.lower().isin(NULL_STRINGS)
@@ -19,7 +37,11 @@ def _semantic_type(s: pd.Series) -> tuple[str,float]:
     non=s[~_blank(s)]
     if non.empty:return "empty",1.0
     num=pd.to_numeric(non,errors="coerce").notna().mean()
-    dt=pd.to_datetime(non,errors="coerce").notna().mean()
+    # Pandas warns when arbitrary text is tested as a date.  Profiling is
+    # intentionally permissive here; suppress only that parser warning.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore',UserWarning)
+        dt=pd.to_datetime(non,errors="coerce").notna().mean()
     vals=non.astype(str).str.strip()
     if num>=.92:return "numeric",round(float(num),2)
     if dt>=.92:return "date",round(float(dt),2)
@@ -66,14 +88,19 @@ def validation_mask(field: str, s: pd.Series) -> pd.Series:
 
 def profile_dataframe(df: pd.DataFrame, filename: str, rule_mapper) -> dict:
     rows=len(df); columns=[]; mapping=[]; used=set(); total_missing=0; type_conf=[]; map_conf=[]; invalid_total=0
+    required_coverage={field:0.0 for field in REQUIRED_TWIN_FIELDS}
+    invalid_rows_mask=pd.Series(False,index=df.index)
     issues=[]
     for col in df.columns:
         s=df[col]; blank=_blank(s); total_missing+=int(blank.sum())
         sem,conf=_semantic_type(s); type_conf.append(conf)
         field,mconf,reason=rule_mapper(str(col)); mapped=field if field and field not in used else "unmapped"
-        if mapped!="unmapped": used.add(mapped); map_conf.append(float(mconf))
+        if mapped!="unmapped":
+            used.add(mapped); map_conf.append(float(mconf))
+            if mapped in required_coverage:
+                required_coverage[mapped]=float((~blank).mean()*100) if rows else 0.0
         bad=validation_mask(mapped,s) if mapped!="unmapped" else pd.Series(False,index=s.index)
-        invalid=int(bad.sum()); invalid_total+=invalid
+        invalid=int(bad.sum()); invalid_total+=invalid; invalid_rows_mask=invalid_rows_mask | bad
         c={"name":str(col),"dtype":str(s.dtype),"semantic_type":sem,"type_confidence":conf,
            "non_null":int((~blank).sum()),"null_count":int(blank.sum()),"null_pct":round(float(blank.mean()*100),1) if rows else 0,
            "unique_count":int(s[~blank].nunique(dropna=True)),"sample_values":[x.item() if hasattr(x,'item') else x for x in s[~blank].head(5).tolist()],
@@ -101,14 +128,74 @@ def profile_dataframe(df: pd.DataFrame, filename: str, rule_mapper) -> dict:
             freshness=max(20.0,100.0-min(days,730)/730*80)
     weights={"completeness":.27,"validity":.25,"consistency":.15,"uniqueness":.12,"freshness":.08,"schema_confidence":.13}
     dims={"completeness":round(completeness,1),"validity":round(validity,1),"consistency":round(consistency,1),"uniqueness":round(uniqueness,1),"freshness":round(freshness,1),"schema_confidence":round(schema,1)}
-    score=round(sum(dims[k]*w for k,w in weights.items()),1)
+    base_score=round(sum(dims[k]*w for k,w in weights.items()),1)
+
+    # Quality gates prevent a high average from concealing a critical defect.
+    # The final score remains explainable because every cap is returned to the UI.
+    score_cap=100.0; gates=[]
+    missing_pct=total_missing/cells*100
+    duplicate_pct=exact/max(1,rows)*100
+    invalid_pct=invalid_total/max(1,cells-total_missing)*100
+    invalid_rows=int(invalid_rows_mask.sum())
+    invalid_row_pct=invalid_rows/max(1,rows)*100
+    required_missing=[field for field,value in required_coverage.items() if value<=0]
+    required_min=min(required_coverage.values()) if required_coverage else 0.0
+
+    def add_gate(code: str, cap: float, message: str):
+        nonlocal score_cap
+        score_cap=min(score_cap,cap)
+        gates.append({"code":code,"cap":cap,"message":message})
+
+    if required_missing:
+        add_gate('REQUIRED_FIELD_UNMAPPED',59.9,
+                 'Thiếu ánh xạ trường bắt buộc: '+', '.join(required_missing))
+        for field in required_missing:
+            issues.append({"severity":"danger","code":"REQUIRED_FIELD_UNMAPPED","column":field,
+                           "message":f'Chưa ánh xạ được trường bắt buộc {field}'})
+    elif required_min<50:
+        add_gate('CRITICAL_REQUIRED_COVERAGE',59.9,
+                 f'Trường bắt buộc thấp nhất chỉ đạt {required_min:.1f}% dữ liệu')
+    elif required_min<70:
+        add_gate('LOW_REQUIRED_COVERAGE',74.9,
+                 f'Trường bắt buộc thấp nhất chỉ đạt {required_min:.1f}% dữ liệu')
+    elif required_min<90:
+        add_gate('PARTIAL_REQUIRED_COVERAGE',89.9,
+                 f'Trường bắt buộc thấp nhất chỉ đạt {required_min:.1f}% dữ liệu')
+
+    for field,coverage in required_coverage.items():
+        if 0<coverage<90:
+            severity='danger' if coverage<50 else 'warning'
+            issues.append({"severity":severity,"code":"LOW_REQUIRED_COVERAGE","column":field,
+                           "message":f'Trường bắt buộc {field} mới có {coverage:.1f}% dữ liệu'})
+
+    if missing_pct>=30:
+        add_gate('CRITICAL_MISSING_RATE',59.9,f'Tỷ lệ ô trống toàn bộ dữ liệu là {missing_pct:.1f}%')
+    elif missing_pct>=15:
+        add_gate('HIGH_MISSING_RATE',74.9,f'Tỷ lệ ô trống toàn bộ dữ liệu là {missing_pct:.1f}%')
+
+    if duplicate_pct>=10:
+        add_gate('CRITICAL_DUPLICATE_RATE',74.9,f'Tỷ lệ dòng trùng là {duplicate_pct:.1f}%')
+    elif duplicate_pct>=5:
+        add_gate('HIGH_DUPLICATE_RATE',89.9,f'Tỷ lệ dòng trùng là {duplicate_pct:.1f}%')
+
+    if invalid_row_pct>=10:
+        add_gate('CRITICAL_INVALID_RATE',59.9,f'{invalid_row_pct:.1f}% dòng có giá trị không hợp lệ')
+    elif invalid_row_pct>=5:
+        add_gate('HIGH_INVALID_RATE',74.9,f'{invalid_row_pct:.1f}% dòng có giá trị không hợp lệ')
+    elif invalid_row_pct>=2:
+        add_gate('ELEVATED_INVALID_RATE',89.9,f'{invalid_row_pct:.1f}% dòng có giá trị không hợp lệ')
+
+    score=round(min(base_score,score_cap),1)
     label="Rất tốt" if score>=90 else "Tốt" if score>=75 else "Cần kiểm tra" if score>=60 else "Không nên mô phỏng"
-    required_found=[m['canonical_field'] for m in mapping if m['canonical_field'] in ('age','job','pain_point','personality','interest_keywords')]
+    required_found=[field for field,value in required_coverage.items() if value>0]
     return {"filename":filename,"rows":rows,"columns_count":len(df.columns),"duplicate_rows":exact,"empty_rows":empty_rows,
             "columns":columns,"sample_rows":[{str(k):(None if pd.isna(v) else (v.item() if hasattr(v,'item') else v)) for k,v in r.items()} for r in df.head(10).to_dict('records')],
-            "rule_mapping":mapping,"required_fields":['age','job','pain_point','personality','interest_keywords'],"required_found_by_rule":required_found,
-            "required_missing_by_rule":[f for f in ['age','job','pain_point','personality','interest_keywords'] if f not in required_found],
-            "quality":{"score":score,"label":label,"dimensions":dims,"issues":issues,"invalid_cells":invalid_total,"missing_cells":total_missing}}
+            "rule_mapping":mapping,"required_fields":list(REQUIRED_TWIN_FIELDS),"required_found_by_rule":required_found,
+            "required_missing_by_rule":required_missing,"required_coverage":{k:round(v,1) for k,v in required_coverage.items()},
+            "quality":{"score":score,"base_score":base_score,"score_cap":score_cap,"label":label,"dimensions":dims,
+                       "gates":gates,"issues":issues,"invalid_cells":invalid_total,"invalid_rows":invalid_rows,"missing_cells":total_missing,
+                       "missing_pct":round(missing_pct,1),"duplicate_pct":round(duplicate_pct,1),"invalid_pct":round(invalid_pct,1),
+                       "invalid_row_pct":round(invalid_row_pct,1)}}
 
 def detect_possible_duplicates(df: pd.DataFrame, mapping: list[dict], limit=30) -> dict:
     rename={m['source_column']:m['canonical_field'] for m in mapping if m.get('canonical_field') not in (None,'unmapped','unknown_column') and m['source_column'] in df.columns}
@@ -165,16 +252,73 @@ def digital_twin_readiness(df: pd.DataFrame, provenance: pd.DataFrame|None=None)
       'Hành vi giá':['discount_usage','average_order_value','total_spending'],
       'Tương tác':['channel','device','acquisition_source','review_text','website_visits_30d','email_open_rate','cart_abandon_rate'],
     }
+    rows=len(df)
+
+    def field_score(field: str) -> tuple[float|None,float]:
+        """Return (reliability-adjusted score, raw coverage) for one field.
+
+        NOT_APPLICABLE cells are removed from the denominator.  This keeps a
+        new customer with no purchase history from being marked as bad data.
+        """
+        if field not in df.columns or not rows:
+            return 0.0,0.0
+        blank=_blank(df[field])
+        applicable=pd.Series(True,index=df.index)
+        if field in {'last_purchase_date','average_order_value'} and 'order_count' in df.columns:
+            orders=pd.to_numeric(df['order_count'],errors='coerce')
+            applicable=~((orders.fillna(0)<=0) & blank)
+        if provenance is not None and field in provenance.columns:
+            src=provenance[field].astype(str).str.strip().str.upper()
+            applicable=applicable & ~src.eq('NOT_APPLICABLE')
+        denominator=int(applicable.sum())
+        if denominator==0:
+            return None,100.0
+        present=applicable & ~blank
+        raw=float(present.sum()/denominator*100)
+        if provenance is None or field not in provenance.columns:
+            return raw,raw
+        src=provenance[field].astype(str).str.strip().str.upper()
+        weights=src.map(lambda value: PROVENANCE_WEIGHTS.get(value,.50)).fillna(0.0)
+        adjusted=float((weights.where(present,0.0)[applicable].sum()/denominator)*100)
+        return adjusted,raw
+
+    all_fields={field for fields in groups.values() for field in fields} | set(REQUIRED_TWIN_FIELDS)
+    field_scores={}; raw_coverage={}
+    for field in sorted(all_fields):
+        adjusted,raw=field_score(field)
+        field_scores[field]=None if adjusted is None else round(adjusted,1)
+        raw_coverage[field]=round(raw,1)
+
     scores={}
     for name,fields in groups.items():
-        vals=[]
-        for f in fields:
-            if f not in df.columns: vals.append(0); continue
-            vals.append(float((~_blank(df[f])).mean()*100) if len(df) else 0)
-        scores[name]=round(sum(vals)/len(vals),1)
+        vals=[field_scores[field] for field in fields if field_scores.get(field) is not None]
+        scores[name]=round(sum(vals)/len(vals),1) if vals else 100.0
     overall=round(sum(scores.values())/len(scores),1) if scores else 0
-    status='READY' if overall>=75 else 'CAUTION' if overall>=55 else 'NOT_READY'
-    return {'overall':overall,'status':status,'areas':scores,'message':'Sẵn sàng tạo Digital Twin.' if status=='READY' else ('Có thể mô phỏng nhưng nên kiểm tra các vùng dữ liệu yếu.' if status=='CAUTION' else 'Chưa khuyến nghị tạo Digital Twin trước khi cải thiện dữ liệu.')}
+
+    required_values=[field_scores.get(field) or 0.0 for field in REQUIRED_TWIN_FIELDS]
+    required_average=round(sum(required_values)/len(required_values),1)
+    required_min=round(min(required_values),1)
+    gate_reasons=[]
+    if required_min<50:
+        gate_reasons.append(f'Trường bắt buộc thấp nhất chỉ đạt {required_min:.1f}%')
+    if required_average<65:
+        gate_reasons.append(f'Trung bình trường bắt buộc chỉ đạt {required_average:.1f}%')
+    if overall<55 or required_min<50 or required_average<65:
+        status='NOT_READY'
+    elif overall<75 or required_min<75 or required_average<85:
+        status='CAUTION'
+        if required_min<75:
+            gate_reasons.append(f'Trường bắt buộc thấp nhất chưa đạt 75% ({required_min:.1f}%)')
+        if required_average<85:
+            gate_reasons.append(f'Trung bình trường bắt buộc chưa đạt 85% ({required_average:.1f}%)')
+    else:
+        status='READY'
+    message={'READY':'Sẵn sàng tạo Digital Twin.',
+             'CAUTION':'Có thể mô phỏng nhưng nên kiểm tra các vùng dữ liệu yếu.',
+             'NOT_READY':'Chưa khuyến nghị tạo Digital Twin trước khi cải thiện dữ liệu.'}[status]
+    return {'overall':overall,'status':status,'areas':scores,'field_scores':field_scores,
+            'raw_coverage':raw_coverage,'required_average':required_average,'required_min':required_min,
+            'gate_reasons':gate_reasons,'message':message}
 
 def data_drift(current: pd.DataFrame, historical: pd.DataFrame) -> dict:
     if historical is None or historical.empty:return {'available':False,'alerts':[]}
