@@ -7,6 +7,12 @@ async def call_text(prompt, provider=None, temperature=0.3, json_mode=False, max
     if p=='groq':
         if not config.GROQ_API_KEY: raise AIProviderError('Thiếu GROQ_API_KEY trong .env')
         body={'model':config.GROQ_MODEL,'messages':[{'role':'system','content':'Bạn là thành phần AI của MarketSim AI. Chỉ dùng dữ liệu được cung cấp.'},{'role':'user','content':prompt}],'temperature':temperature}
+        # GPT-OSS uses part of max_completion_tokens for reasoning.  Keeping the
+        # effort low and excluding reasoning leaves enough room for the required
+        # JSON document while reducing quota consumption.
+        if str(config.GROQ_MODEL).startswith('openai/gpt-oss-'):
+            body['reasoning_effort']='low'
+            body['include_reasoning']=False
         if json_mode: body['response_format']={'type':'json_object'}
         # Optional and backward-compatible: only callers that explicitly request a cap are affected.
         if max_completion_tokens is not None:

@@ -47,7 +47,7 @@ _GROQ_SIM_LOCK = asyncio.Lock()
 _GROQ_COOLDOWN_UNTIL = 0.0
 _GROQ_SIM_MAX_RETRIES = 2
 _GROQ_SIM_MAX_WAIT_SECONDS = 600.0
-_GROQ_SIM_MAX_COMPLETION_TOKENS = 180
+_GROQ_SIM_MAX_COMPLETION_TOKENS = 512
 
 def _compact_twin_for_ai(twin: dict) -> dict:
     """Return only simulation-relevant synthetic fields; never raw customer identity/provenance."""
@@ -98,9 +98,14 @@ async def _simulation_ai_call(prompt: str, provider: str):
                 return await call_text(prompt,provider,.5,True,max_completion_tokens=_GROQ_SIM_MAX_COMPLETION_TOKENS)
             except Exception as e:
                 msg=f'{type(e).__name__}: {e}'
-                is_429='HTTP 429' in msg or 'rate_limit_exceeded' in msg.lower() or 'too many requests' in msg.lower()
-                if not is_429 or attempt>=_GROQ_SIM_MAX_RETRIES:
+                lowered=msg.lower()
+                is_429='HTTP 429' in msg or 'rate_limit_exceeded' in lowered or 'too many requests' in lowered
+                is_json_failure='json_validate_failed' in lowered or 'failed to validate json' in lowered or 'failed to generate json' in lowered
+                if (not is_429 and not is_json_failure) or attempt>=_GROQ_SIM_MAX_RETRIES:
                     raise
+                if is_json_failure:
+                    await asyncio.sleep(1.0)
+                    continue
                 retry=_retry_seconds_from_error(msg)
                 # Respect provider guidance when present; otherwise use a small exponential delay.
                 wait=min(_GROQ_SIM_MAX_WAIT_SECONDS, max(2.0, (retry if retry is not None else 2.0*(2**attempt))) + 1.0)

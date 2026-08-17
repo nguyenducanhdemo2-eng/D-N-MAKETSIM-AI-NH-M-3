@@ -23,7 +23,7 @@ _LEARNING_GROQ_LAST_CALL = 0.0
 _LEARNING_GROQ_MIN_INTERVAL_SEC = 12.0
 _LEARNING_GROQ_MAX_RETRIES = 3
 _LEARNING_GROQ_MAX_WAIT_SEC = 180.0
-_LEARNING_GROQ_MAX_COMPLETION_TOKENS = 180
+_LEARNING_GROQ_MAX_COMPLETION_TOKENS = 512
 
 def _learning_retry_seconds(error_text: str) -> float | None:
     text = str(error_text or "")
@@ -78,9 +78,17 @@ async def _learning_ai_call(prompt: str, provider: str):
                 return result
             except Exception as e:
                 msg=f"{type(e).__name__}: {e}"
-                is_429=('HTTP 429' in msg or 'rate_limit_exceeded' in msg.lower() or 'too many requests' in msg.lower())
-                if not is_429 or attempt>=_LEARNING_GROQ_MAX_RETRIES:
+                lowered=msg.lower()
+                is_429=('HTTP 429' in msg or 'rate_limit_exceeded' in lowered or 'too many requests' in lowered)
+                is_json_failure=('json_validate_failed' in lowered or 'failed to validate json' in lowered or 'failed to generate json' in lowered)
+                if (not is_429 and not is_json_failure) or attempt>=_LEARNING_GROQ_MAX_RETRIES:
                     raise
+                if is_json_failure:
+                    # GPT-OSS may occasionally fail strict JSON generation. A
+                    # short retry is preferable to marking real evidence as
+                    # "AI chưa biết" immediately.
+                    await asyncio.sleep(1.0)
+                    continue
                 retry=_learning_retry_seconds(msg)
                 wait=min(_LEARNING_GROQ_MAX_WAIT_SEC, max(3.0, (retry if retry is not None else 5.0*(attempt+1))) + 1.0)
                 _LEARNING_GROQ_COOLDOWN_UNTIL=max(_LEARNING_GROQ_COOLDOWN_UNTIL,time.monotonic()+wait)
