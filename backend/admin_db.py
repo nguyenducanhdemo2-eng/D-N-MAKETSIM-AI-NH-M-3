@@ -613,14 +613,6 @@ def make_first_admin(user_id: int, display_name: str = '', organization_name: st
     return create_company_admin(user_id, display_name, organization_name)["join_code"]
 
 
-def bootstrap_code_valid(value: str | None) -> bool:
-    """Require the deployment secret before creating any business ADMIN."""
-    expected = config.ADMIN_BOOTSTRAP_CODE
-    if len(expected)<16:
-        return False
-    return secrets.compare_digest(expected, (value or '').strip())
-
-
 def require_admin_account(user_id: int) -> dict:
     a = get_account(user_id)
     if not a or a.get('role') != 'admin' or not int(a.get('is_active') or 0):

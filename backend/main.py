@@ -19,7 +19,7 @@ from advanced_simulation import simulate_twins, paired_compare, optimize_marketi
 from .auth_db import init_auth, create_session, get_user, delete_session, set_session_mode
 from .admin_db import (init_admin_schema, admin_count, company_count, get_account, find_admin_by_join_code, attach_employee,
     employee_visible_to_admin, repair_company_memberships,
-    create_company_admin, bootstrap_code_valid, require_admin_account, require_employee_account,
+    create_company_admin, require_admin_account, require_employee_account,
     get_admin_profile, regenerate_join_code, set_user_ai_provider,
     admin_overview, admin_staff, admin_employee_detail, admin_activity, admin_team_health, set_employee_active,
     normalize_join_code, record_activity, activity_name, get_company_schema_mapping, save_company_schema_mappings)
@@ -112,7 +112,7 @@ class Auth(BaseModel): email:str; password:str
 class EmployeeRegister(BaseModel):
     email:str; password:str; leader_code:str; display_name:str=''
 class AdminRegister(BaseModel):
-    email:str; password:str; display_name:str=''; organization_name:str=''; bootstrap_code:str=''
+    email:str; password:str; display_name:str=''; organization_name:str=''
 class CompanyCodeBody(BaseModel): code:str
 class ActiveBody(BaseModel): active:bool
 class Provider(BaseModel): provider:str
@@ -354,8 +354,10 @@ def auth_admin_status():
         'admin_exists': admin_count() > 0,
         'admin_count': admin_count(),
         'company_count': company_count(),
-        'admin_registration_open': len(config.ADMIN_BOOTSTRAP_CODE)>=16,
-        'bootstrap_protected': len(config.ADMIN_BOOTSTRAP_CODE)>=16,
+        # New businesses may register directly. Keep these response fields so
+        # older cached login pages remain compatible during deployment.
+        'admin_registration_open': True,
+        'bootstrap_protected': False,
     }
 
 @app.post('/api/auth/validate-company-code')
@@ -422,11 +424,7 @@ def register(req:Request,b:EmployeeRegister):
 @app.post('/api/auth/register-admin')
 def register_admin(req:Request,b:AdminRegister):
     enforce_rate_limit(req,'admin-register',5,3600)
-    if len(config.ADMIN_BOOTSTRAP_CODE)<16:
-        raise HTTPException(503,'Chức năng tạo ADMIN đang bị khóa. Hãy cấu hình ADMIN_BOOTSTRAP_CODE dài tối thiểu 16 ký tự trên máy chủ.')
     # Multi-company: every business may create its own independent ADMIN account.
-    if not bootstrap_code_valid(b.bootstrap_code):
-        raise HTTPException(403,'Mã khởi tạo ADMIN không đúng.')
     if len(b.password)<config.PASSWORD_MIN_LENGTH:
         raise HTTPException(400,f'Mật khẩu phải có ít nhất {config.PASSWORD_MIN_LENGTH} ký tự.')
     if not (b.organization_name or '').strip():
@@ -852,16 +850,46 @@ def customer_dataset_history(req:Request):
     u=current_user(req)
     return json_safe({'stats':get_user_dataset_stats(u['id']),'items':get_user_dataset_history(u['id'],50)})
 
+@app.get('/api/customers/datasets/{upload_id}/learning')
+def customer_dataset_learning_detail(req:Request,upload_id:int):
+    """Show what AI learned for one dataset owned by the current account."""
+    u=current_user(req)
+    detail=get_dataset_learning_detail(u['id'],upload_id)
+    if not detail:
+        # Do not reveal whether another account owns the guessed upload id.
+        raise HTTPException(404,'Không tìm thấy bộ dữ liệu thuộc tài khoản này.')
+    return json_safe({'ok':True,'dataset':detail})
+
 @app.post('/api/trends/collect')
 async def collect_trends(req:Request):
     u=current_user(req); _user_rate_limit(u,'trend-collection',10,600)
     try:
         from data_collector import fetch_pytrends
-        trends=fetch_pytrends()
+        # Pytrends performs blocking HTTP calls. Run it outside FastAPI's event
+        # loop so one slow Google response cannot freeze other users' requests.
+        trends=await asyncio.to_thread(fetch_pytrends)
         rows=[] if trends is None or trends.empty else trends.to_dict('records')
-        return json_safe({'ok':True,'items':rows,'count':len(rows),'source':'Pytrends','message':('Đã thu thập dữ liệu bằng Pytrends.' if rows else 'Pytrends chưa trả dữ liệu. Có thể nguồn đang giới hạn truy cập hoặc từ khóa chưa đủ dữ liệu.')})
+        meta=dict(getattr(trends,'attrs',{}) or {}) if trends is not None else {}
+        status=str(meta.get('status') or ('live' if rows else 'empty'))
+        message=str(meta.get('message') or ('Đã cập nhật Google Trends.' if rows else 'Google Trends chưa trả dữ liệu.'))
+        internal_error=str(meta.get('error') or '')
+        if internal_error:
+            print(f'[PYTRENDS {status.upper()}] {internal_error}',flush=True)
+        return json_safe({
+            'ok':bool(rows),
+            'items':rows,
+            'count':len(rows),
+            'source':meta.get('source') or 'Google Trends (Pytrends)',
+            'status':status,
+            'cached':bool(meta.get('cached')),
+            'message':message,
+            # Do not expose raw network exceptions/cookies/URLs to the browser.
+            'error':None if rows else message,
+        })
     except Exception as e:
-        return {'ok':False,'items':[],'count':0,'source':'Pytrends','error':str(e)}
+        print(f'[PYTRENDS ENDPOINT ERROR] {type(e).__name__}: {e}',flush=True)
+        message='Không thể khởi chạy bộ thu thập Google Trends. Kiểm tra requirements.txt và log máy chủ.'
+        return {'ok':False,'items':[],'count':0,'source':'Google Trends (Pytrends)','status':'server_error','message':message,'error':message}
 
 @app.get('/api/trends')
 async def get_trends(req:Request):

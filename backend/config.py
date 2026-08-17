@@ -2,8 +2,9 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR/'.env')
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = PROJECT_DIR
+load_dotenv(PROJECT_DIR/'.env')
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value=os.getenv(name)
@@ -16,16 +17,15 @@ _db_path_env = os.getenv('MARKETSIM_DB_PATH','').strip()
 _data_dir_env = os.getenv('MARKETSIM_DATA_DIR','').strip()
 if _db_path_env:
     _candidate = Path(_db_path_env).expanduser()
-    DB_PATH = str(_candidate if _candidate.is_absolute() else (BASE_DIR / _candidate).resolve())
+    DB_PATH = str(_candidate if _candidate.is_absolute() else (PROJECT_DIR / _candidate).resolve())
 elif _data_dir_env:
     DB_PATH = str((Path(_data_dir_env).expanduser() / 'marketsim.db').resolve())
 else:
-    DB_PATH = str(BASE_DIR/'marketsim.db')
+    DB_PATH = str(PROJECT_DIR/'marketsim.db')
 TREND_KEYWORDS = [x.strip() for x in os.getenv('TREND_KEYWORDS','thời trang,công nghệ,ẩm thực,du lịch,làm đẹp').split(',') if x.strip()]
 NEWS_URLS = [x.strip() for x in os.getenv('NEWS_URLS','https://vnexpress.net/kinh-doanh,https://cafef.vn').split(',') if x.strip()]
 TRENDS_TIMEFRAME=os.getenv('TRENDS_TIMEFRAME','now 7-d'); TRENDS_GEO=os.getenv('TRENDS_GEO','VN')
-# Pytrends calls an unofficial Google endpoint, so keep requests conservative and
-# cache successful responses to avoid repeated-click bursts and HTTP 429 blocks.
+# Keep Google Trends collection conservative; see data_collector.fetch_pytrends.
 TRENDS_CACHE_TTL_SECONDS=max(60,int(os.getenv('TRENDS_CACHE_TTL_SECONDS','900')))
 TRENDS_STALE_CACHE_SECONDS=max(TRENDS_CACHE_TTL_SECONDS,int(os.getenv('TRENDS_STALE_CACHE_SECONDS','86400')))
 TRENDS_CONNECT_TIMEOUT_SECONDS=max(2,int(os.getenv('TRENDS_CONNECT_TIMEOUT_SECONDS','10')))
@@ -38,9 +38,6 @@ OLLAMA_MODEL=os.getenv('OLLAMA_MODEL','qwen2.5:7b')
 NUM_PERSONAS_PER_CLUSTER=int(os.getenv('NUM_PERSONAS_PER_CLUSTER','10'))
 MAX_CONCURRENT_REQUESTS=int(os.getenv('MAX_CONCURRENT_REQUESTS','8'))
 MAX_SIMULATED_PERSONAS=int(os.getenv('MAX_SIMULATED_PERSONAS','1000'))
-# 50 MiB is a safer default for a synchronous pandas/Excel ingestion pipeline.
-# The upload reader also enforces this limit while streaming, before the entire
-# request body can be retained in application memory.
 MAX_UPLOAD_BYTES=int(os.getenv('MAX_UPLOAD_BYTES',str(50*1024**2)))
 REQUEST_TIMEOUT_SEC=int(os.getenv('REQUEST_TIMEOUT_SEC','120'))
 AI_PROVIDER=os.getenv('AI_PROVIDER','groq').lower().strip()
@@ -56,10 +53,7 @@ AI_TIMEOUT_SECONDS=float(os.getenv('AI_TIMEOUT_SECONDS','90'))
 MAX_CONCURRENT_AI=int(os.getenv('MAX_CONCURRENT_AI',str(MAX_CONCURRENT_REQUESTS)))
 SESSION_COOKIE=os.getenv('SESSION_COOKIE','marketsim_session')
 SESSION_MAX_AGE_SECONDS=max(300,int(os.getenv('SESSION_MAX_AGE_SECONDS','604800')))
-SESSION_IDLE_TIMEOUT_SECONDS=max(300,min(
-    SESSION_MAX_AGE_SECONDS,
-    int(os.getenv('SESSION_IDLE_TIMEOUT_SECONDS','43200')),
-))
+SESSION_IDLE_TIMEOUT_SECONDS=max(300,min(SESSION_MAX_AGE_SECONDS,int(os.getenv('SESSION_IDLE_TIMEOUT_SECONDS','43200'))))
 SESSION_COOKIE_SECURE=_env_bool('SESSION_COOKIE_SECURE',APP_ENV=='production')
 PASSWORD_MIN_LENGTH=max(8,int(os.getenv('PASSWORD_MIN_LENGTH','8')))
 PBKDF2_ITERATIONS=max(310000,int(os.getenv('PBKDF2_ITERATIONS','600000')))
